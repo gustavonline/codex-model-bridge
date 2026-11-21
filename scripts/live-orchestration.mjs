@@ -2,7 +2,7 @@
 // in a disposable profile) uses Bridge's session tools to create a REAL Gemini child through Antigravity, reads its mailbox question, replies,
 // and reads its answer. Desktop GUI and browser are not involved. Test budget: the GPT model must be a Luna model the runtime advertises, at
 // low effort; Gemini via Antigravity is cost-exempt. Prints a report with every model call counted.
-// Usage: node scripts/live-orchestration.mjs --run --gpt-model gpt-6-luna [--codex <codex>] [--agy agy] [--source <CODEX_HOME with auth.json>]
+// Usage: node scripts/live-orchestration.mjs --run --gpt-model gpt-6-luna [--codex <codex>] [--agy agy] [--source <CODEX_HOME with auth.json>] [--sandbox danger-full-access]
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
@@ -12,7 +12,9 @@ import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { Peer } from '../rpc.mjs';
 
-const { values } = parseArgs({ options: { run: { type: 'boolean' }, 'gpt-model': { type: 'string' }, codex: { type: 'string', default: 'codex' }, agy: { type: 'string', default: 'agy' }, source: { type: 'string' } } });
+const { values } = parseArgs({ options: { run: { type: 'boolean' }, 'gpt-model': { type: 'string' }, codex: { type: 'string', default: 'codex' }, agy: { type: 'string', default: 'agy' }, source: { type: 'string' }, sandbox: { type: 'string', default: 'read-only' } } });
+// The GPT parent's sandbox, which its Gemini child inherits. On macOS Antigravity runs only in a full-access chat: pass --sandbox danger-full-access.
+if (!['read-only', 'workspace-write', 'danger-full-access'].includes(values.sandbox)) throw new Error('--sandbox must be read-only, workspace-write or danger-full-access');
 if (!values.run) throw new Error('This sends a few real GPT (cheapest tier) and Gemini turns. Pass --run.');
 const gptModel = values['gpt-model'];
 if (!/^gpt-[\w.]+-luna$/.test(gptModel ?? '')) throw new Error('Live tests run only on the cheapest GPT tier: pass --gpt-model gpt-<version>-luna as advertised by model/list.');
@@ -21,7 +23,7 @@ if (!existsSync(join(source, 'auth.json'))) throw new Error(`No Codex login at $
 const root = mkdtempSync(join(tmpdir(), 'bridge-live-orch-')), home = join(root, 'codex'), state = join(root, 'state'), ws = join(root, 'workspace');
 for (const d of [home, state, ws]) mkdirSync(d, { recursive: true, mode: 0o700 });
 copyFileSync(join(source, 'auth.json'), join(home, 'auth.json')); chmodSync(join(home, 'auth.json'), 0o600);
-writeFileSync(join(home, 'config.toml'), `model = "${gptModel}"\nmodel_reasoning_effort = "low"\napproval_policy = "never"\nsandbox_mode = "read-only"\n`, { mode: 0o600 });
+writeFileSync(join(home, 'config.toml'), `model = "${gptModel}"\nmodel_reasoning_effort = "low"\napproval_policy = "never"\nsandbox_mode = "${values.sandbox}"\n`, { mode: 0o600 });
 writeFileSync(join(ws, 'README.txt'), 'synthetic orchestration workspace\n');
 const report = { gptModel, gptEffort: 'low', gptTurns: 0, geminiTurns: 0, steps: [] }, events = [], waiters = new Set();
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ANTHROPIC_|CLAUDE|OPENAI_API|GEMINI_|GOOGLE_)/.test(k)));
@@ -45,7 +47,7 @@ try {
   await peer.request('initialize', { clientInfo: { name: 'bridge-live-orchestration', version: '1' }, capabilities: { experimentalApi: true } }); peer.notify('initialized', {});
   const list = (await peer.request('model/list', {})).data;
   if (!list.some(m => m.id === gptModel)) throw new Error(`${gptModel} is not advertised by model/list; no model was called.`);
-  const parent = (await peer.request('thread/start', { cwd: ws, model: gptModel, approvalPolicy: 'never', sandbox: 'read-only' })).thread.id;
+  const parent = (await peer.request('thread/start', { cwd: ws, model: gptModel, approvalPolicy: 'never', sandbox: values.sandbox })).thread.id;
   report.parent = parent;
   const one = await gpt(parent, 'This is a synthetic integration test of the codex_bridge_sessions tools. Do exactly this, using only those tools: '
     + '1) Call manage with operation create, model "antigravity/gemini-3.8-flash", requestId "gpt-gemini-000001" and text: '

@@ -1,7 +1,7 @@
 // Explicit opt-in (--run): the Antigravity adapter (antigravity.mjs) end to end on an EXISTING agy login, inside its process boundary. A few
 // short Gemini turns in a throwaway workspace: catalog, model/level choice, one Bridge MCP tool call, a cancel mid-turn and the teardown.
 // The MCP-only agent definition is written to agy's own config/agents under a unique name and removed afterwards. Never signs in.
-// Usage: node scripts/live-antigravity.mjs --run <absolute agy> [model] [level]
+// Usage: node scripts/live-antigravity.mjs --run <absolute agy> [model] [level] [--full-access]
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join, isAbsolute } from 'node:path';
@@ -12,7 +12,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { open } from '../antigravity.mjs';
 
-const [consent, agy, model = 'gemini-3.8-flash', level = 'low'] = process.argv.slice(2);
+const fullAccess = process.argv.includes('--full-access'); // macOS: grants agy's local listener, as Bridge does only for a full-access chat
+const [consent, agy, model = 'gemini-3.8-flash', level = 'low'] = process.argv.slice(2).filter(a => a !== '--full-access');
 if (consent !== '--run' || !isAbsolute(agy ?? '')) throw new Error('Usage: --run <absolute agy> [model] [level]. This sends a few short real Antigravity turns on an existing login.');
 const home = homedir(), agents = join(home, '.gemini', 'config', 'agents'), name = 'bridge-mcp-' + randomBytes(6).toString('hex'), hadAgents = existsSync(agents);
 mkdirSync(agents, { recursive: true }); writeFileSync(join(agents, name + '.md'), (await import('../antigravity.mjs')).agentDefinition(name));
@@ -25,7 +26,7 @@ const mcpServe = async stream => {
 };
 const report = {}; const t0 = performance.now(); let session;
 try {
-  session = await open({ executable: agy, cwd: ws, home, agentName: name, mcpServe, codexTools: new Set(['probe_echo']), onEvent: e => events.push({ ...e, at: Math.round(performance.now() - t0) }) });
+  session = await open({ executable: agy, cwd: ws, home, agentName: name, mcpServe, codexTools: new Set(['probe_echo']), localBinding: fullAccess, onEvent: e => events.push({ ...e, at: Math.round(performance.now() - t0) }) });
   report.openMs = Math.round(performance.now() - t0); report.catalog = session.catalog;
   await session.configure({ model, level });
   let t = performance.now(); const first = await session.prompt('Call the probe_echo tool with text live, then reply with its result.');
