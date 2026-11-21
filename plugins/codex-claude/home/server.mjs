@@ -244,6 +244,7 @@ function readableError(code) {
     auth_verify_failed: 'agy accepted the sign-in, but Model Bridge could not list your account’s models inside its sandbox. Try again later.',
     auth_code_invalid: 'That is not a code from the Antigravity page for this sign-in. Paste the code, or the page’s full address.',
     auth_code_rejected: 'Google did not accept that code. Start the sign-in again.', auth_not_waiting: 'Wait for the Google sign-in link before sending a code.',
+    auth_verify_timeout: 'agy accepted the sign-in, but Model Bridge did not check it in time. Make sure the Codex app with Model Bridge is open, then sign in again.',
     harness_runtime_not_found: 'agy is not installed on this Mac.', harness_not_qualified: 'Gemini (Antigravity) does not run on this system yet.' };
   if (geminiErrors[code]) return geminiErrors[code];
   return ({ catalog_auth_required: 'The provider refused catalog access. Check its saved sign-in.', catalog_rate_limited: 'The provider rate-limited this catalog request.', catalog_unreachable: 'The endpoint could not be reached.', catalog_protocol_unsupported: 'The endpoint did not return a supported model catalog.', auth_denied: 'Browser authorization was refused.', auth_rate_limited: 'Authorization was rate-limited.', auth_unreachable: 'The authorization service could not be reached.', auth_timeout: 'Authorization timed out.', stale_revision: 'Connection state changed; read current state before trying again.', harness_not_qualified: 'This runtime cannot run on this system yet.', harness_runtime_not_found: 'This runtime is not installed. Install it, then try again.' })[code] || 'The action could not be completed. Read current state before trying again.';
@@ -382,8 +383,10 @@ function renderProviders(target, c, blocked) {
       button(box, 'Open Google sign-in', function () { openAuth(a.authorizationUrl); }, 'gemini-open-auth', !linksAvailable || !!linkRequest, true);
       var row = node('label', 'Code from the Antigravity page'), input = keyed(node('input'), 'gemini-code');
       input.type = 'password'; input.autocomplete = 'off'; input.spellcheck = false; input.maxLength = 8192; input.id = 'gemini-code'; input.value = geminiCode; input.disabled = blocked;
-      row.setAttribute('for', 'gemini-code'); input.addEventListener('input', function () { geminiCode = input.value; }); row.append(input); box.append(row);
-      button(box, 'Send code', function () { var code = geminiCode; geminiCode = ''; controlCall('harness_sign_in_code', { harness: 'antigravity', code: code }); }, 'gemini-send-code', !geminiCode);
+      row.setAttribute('for', 'gemini-code'); row.append(input); box.append(row);
+      var send = button(box, 'Send code', function () { var code = geminiCode; geminiCode = ''; input.value = ''; controlCall('harness_sign_in_code', { harness: 'antigravity', code: code }); }, 'gemini-send-code', !geminiCode);
+      // A state poll does not re-render while waiting, so typing enables the button itself.
+      input.addEventListener('input', function () { geminiCode = input.value; send.disabled = blocked || !geminiCode; });
     }
     if (busy) button(box, 'Cancel sign-in', function () { geminiCode = ''; controlCall('harness_sign_in_cancel', { harness: 'antigravity' }); }, 'gemini-cancel-auth');
     else button(box, a.verified ? 'Sign in again' : 'Sign in with Google', function () { controlCall('harness_sign_in', { harness: 'antigravity' }); }, 'gemini-sign-in', !linksAvailable, !a.verified);
@@ -1062,7 +1065,7 @@ export function session(observe = observeHome, controls = null) {
           const value = home(controlState);
           return reply({ content: [{ type: 'text', text: controls.message ?? 'Synthetic test connection updated/read. Native profile, authentication and inference remain unverified.' }], structuredContent: value });
         }).catch(error => {
-          const code = ['invalid_request', 'wrong_scope', 'binding_invalid', 'store_unavailable', 'stale_revision', 'invalid', 'no_catalog', 'locked', 'generation_exhausted', 'catalog_invalid', 'catalog_timeout', 'catalog_failed', 'catalog_auth_required', 'catalog_rate_limited', 'catalog_unreachable', 'catalog_protocol_unsupported', 'endpoint_invalid', 'provider_invalid', 'provider_exists', 'credential_endpoint_mismatch', 'secret_storage_unavailable', 'free_model_required', 'auth_expired', 'auth_cancelled', 'auth_denied', 'auth_rate_limited', 'auth_unreachable', 'auth_timeout', 'harness_not_qualified', 'auth_in_progress', 'auth_failed', 'auth_unsupported_flow', 'auth_not_usable', 'auth_verify_failed', 'auth_code_invalid', 'auth_code_rejected', 'auth_not_waiting', 'harness_runtime_not_found'].includes(error.code) ? error.code : 'action_failed';
+          const code = ['invalid_request', 'wrong_scope', 'binding_invalid', 'store_unavailable', 'stale_revision', 'invalid', 'no_catalog', 'locked', 'generation_exhausted', 'catalog_invalid', 'catalog_timeout', 'catalog_failed', 'catalog_auth_required', 'catalog_rate_limited', 'catalog_unreachable', 'catalog_protocol_unsupported', 'endpoint_invalid', 'provider_invalid', 'provider_exists', 'credential_endpoint_mismatch', 'secret_storage_unavailable', 'free_model_required', 'auth_expired', 'auth_cancelled', 'auth_denied', 'auth_rate_limited', 'auth_unreachable', 'auth_timeout', 'harness_not_qualified', 'auth_in_progress', 'auth_failed', 'auth_unsupported_flow', 'auth_not_usable', 'auth_verify_failed', 'auth_code_invalid', 'auth_code_rejected', 'auth_not_waiting', 'auth_verify_timeout', 'harness_runtime_not_found'].includes(error.code) ? error.code : 'action_failed';
           return reply({ isError: true, content: [{ type: 'text', text: `Action not confirmed (${code}). Read the current test state before trying again.` }], structuredContent: { error: code } });
         });
       }

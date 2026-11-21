@@ -81,7 +81,7 @@ test('Home lists each other harness with its real state and reason, offers no ac
 test('the prepared Antigravity launch pins the Google-account route, moves only its log, and drops every ambient Gemini, Google, ADC, agy or other provider override', () => {
   const env = { HOME: '/h', PATH: '/bin', GEMINI_HOME: '/someone-elses', AGY_ACP_CCPA_PROJECT: 'p', AGY_ACP_ENABLE_OAUTH: '0', GEMINI_API_KEY: 'x', GOOGLE_API_KEY: 'x', GOOGLE_APPLICATION_CREDENTIALS: '/adc.json', GOOGLE_CLOUD_PROJECT: 'p', GOOGLE_GENAI_USE_VERTEXAI: 'true', CLOUDSDK_CONFIG: '/c', OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_OAUTH_TOKEN: 'x' };
   const spec = antigravityLaunch({ executable: '/opt/agy', logDir: '/state/agy-logs', env });
-  assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin', AGY_CLI_DISABLE_AUTO_UPDATE: '1', SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0' }); assert.equal(spec.authMethod, 'oauth-personal');
+  assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin', AGY_CLI_DISABLE_AUTO_UPDATE: '1', SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0', PYTHONUNBUFFERED: '1' }); assert.equal(spec.authMethod, 'oauth-personal');
   assert.deepEqual(spec.args, ['acp', '--process-per-session', '--include-default-customizations=false', '--disable-telemetry', '--log-file', '/state/agy-logs/acp-server.log']); assert.ok(!spec.args.includes('--sandbox'), 'never presented as a boundary');
   assert.throws(() => antigravityLaunch({ executable: 'agy', logDir: '/s' }), { code: 'route_invalid' });
 });

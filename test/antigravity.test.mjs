@@ -49,7 +49,7 @@ test('a session runs inside the boundary with the Google-account route, the acco
   assert.deepEqual(opts.allow, [...googleEndpoints]); assert.deepEqual(opts.writable, ['/home/someone/.gemini']); assert.ok(opts.args.includes('--agent') && opts.args.at(-1) === 'bridge-mcp-abc');
   assert.deepEqual(opts.readable, [mcpRelay], 'only the fixed stdio relay is added inside'); assert.ok(opts.mcpSocket.startsWith(opts.runDir + '/'), 'the exact socket the Mac grant names');
   assert.match(opts.cwd, /bridge-agy-cwd-/, 'agy works in a generated empty directory, never the workspace'); assert.notEqual(opts.cwd, base(h).cwd);
-  assert.deepEqual(Object.keys(opts.env).filter(k => !['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL', 'TZ', 'SSH_CONNECTION', 'AGY_CLI_DISABLE_AUTO_UPDATE'].includes(k)), [], 'only the allowlisted environment'); assert.ok(!Object.keys(opts.env).some(k => /^(GEMINI_API|GOOGLE_)/.test(k)));
+  assert.deepEqual(Object.keys(opts.env).filter(k => !['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL', 'TZ', 'SSH_CONNECTION', 'AGY_CLI_DISABLE_AUTO_UPDATE', 'PYTHONUNBUFFERED'].includes(k)), [], 'only the allowlisted environment'); assert.ok(!Object.keys(opts.env).some(k => /^(GEMINI_API|GOOGLE_)/.test(k)));
   assert.deepEqual(s.catalog, { models: [{ id: 'gemini-flash', name: 'Gemini Flash' }, { id: 'claude-sonnet', name: 'Claude Sonnet' }], levels: ['low', 'high'], current: { model: 'gemini-flash', level: 'high' } });
   await s.configure({ model: 'claude-sonnet', level: 'low' });
   await assert.rejects(s.configure({ model: 'gemini-neon' }), { code: 'model_not_available' }); await assert.rejects(s.configure({ level: 'max' }), { code: 'unsupported_reasoning_effort' });

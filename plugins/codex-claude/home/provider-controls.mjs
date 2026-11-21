@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, lstatSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { ProviderRegistry, rootOk, readPrivate, localModelId, freeOnly, modelReasoning } from './providers.mjs';
-import { agySignInRequestFile, agyVerifiedFile, antigravityProfile, boundarySupported, findExecutable, harness, harnessStatuses, readAgyFile, readHarnessSettings, setHarnessEnabled, writeAgyFile } from './harnesses.mjs';
+import { agySignInRequestFile, agyVerifiedFile, antigravityProfile, boundarySupported, harness, harnessStatuses, readAgyFile, readHarnessSettings, setHarnessEnabled, writeAgyFile } from './harnesses.mjs';
 import { AntigravitySignIn } from './antigravity-auth.mjs';
 const identity = p => { const s = lstatSync(p); return [s.dev, s.ino, s.uid, s.mode & 0o777].join(':'); };
 const fail = code => { throw Object.assign(new Error(code), { code }); };
@@ -46,17 +46,23 @@ export function providerControls(path, { request, secrets, authOptions = {}, agy
   // it is on and its catalog is current. Turning it off keeps the saved selection, shown as unavailable.
   // Gemini sign-in from Home (agy's own `acp --login` on Bridge's profile; antigravity-auth.mjs), offered once Gemini is turned on here. When agy
   // accepts a code, a request is written for Bridge, whose sandboxed catalog probe on the same profile decides whether the sign-in is usable.
-  const agyAuth = new AntigravitySignIn({ ...agyAuthOptions, onSignedIn: () => writeAgyFile(state, agySignInRequestFile, { nonce: randomBytes(16).toString('hex'), at: Date.now() }) });
+  // Only an answer to THIS sign-in's request counts: its nonce is kept here (not read back from disk), cleared when a new sign-in begins.
+  let asked = null;
+  const agyAuth = new AntigravitySignIn({ ...agyAuthOptions, onSignedIn: () => {
+    asked = { nonce: randomBytes(16).toString('hex'), at: Date.now() }; writeAgyFile(state, agySignInRequestFile, asked);
+  } });
+  const verifyBound = agyAuthOptions.verifyMs ?? 180_000;
   const agyExecutable = () => {
     if (!boundarySupported(harness('antigravity'))) return null;
     const saved = readHarnessSettings(state).antigravity; return saved?.enabled ? saved.executable : null;
   };
   const agySignIn = () => {
-    const own = agyAuth.status(), asked = readAgyFile(state, agySignInRequestFile), checked = readAgyFile(state, agyVerifiedFile);
-    const answered = !!asked && checked?.nonce === asked.nonce, verified = checked?.ok === true;
-    // While agy has accepted the code, the sign-in is "verifying" until Bridge's sandboxed probe answers THIS request.
-    const phase = own.phase === 'verifying' && answered ? (verified ? 'complete' : 'failed') : own.phase;
-    const error = own.phase === 'verifying' && answered && !verified ? (checked.reason === 'signed_out' ? 'auth_not_usable' : 'auth_verify_failed') : own.error;
+    const own = agyAuth.status(), checked = readAgyFile(state, agyVerifiedFile), verified = checked?.ok === true;
+    const answered = own.phase === 'verifying' && !!asked && checked?.nonce === asked.nonce;
+    // "verifying" until Bridge's sandboxed probe answers THIS request; without an answer in time, say so (no Bridge with this profile answered).
+    const late = own.phase === 'verifying' && !answered && !!asked && Date.now() - asked.at > verifyBound;
+    const phase = answered ? (verified ? 'complete' : 'failed') : late ? 'failed' : own.phase;
+    const error = answered && !verified ? (checked.reason === 'signed_out' ? 'auth_not_usable' : 'auth_verify_failed') : late ? 'auth_verify_timeout' : own.error;
     return { phase, authorizationUrl: own.authorizationUrl, error, available: !!agyExecutable(), verified, models: verified ? checked.models : null };
   };
   const agyProvider = () => {
@@ -120,7 +126,7 @@ export function providerControls(path, { request, secrets, authOptions = {}, agy
       if (action === 'harness_sign_in') {
         if (args.harness !== 'antigravity' || !boundarySupported(harness('antigravity'))) fail('harness_not_qualified');
         const executable = agyExecutable(); if (!executable) fail('harness_runtime_not_found');
-        await agyAuth.begin(executable, antigravityProfile(state)); guard(); return snapshot();
+        asked = null; await agyAuth.begin(executable, antigravityProfile(state)); guard(); return snapshot();
       }
       if (action === 'harness_sign_in_code') { if (args.harness !== 'antigravity') fail('invalid_request'); agyAuth.submit(args.code); return snapshot(); }
       if (action === 'harness_sign_in_cancel') { if (args.harness !== 'antigravity') fail('invalid_request'); agyAuth.cancel(); return snapshot(); }

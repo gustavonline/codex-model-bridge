@@ -4,8 +4,8 @@
 // prints a Google link whose page, hosted by Antigravity, shows a one-time code; the person pastes that code (or the page's URL) into Home,
 // and it is written to agy's stdin once. Bridge keeps no copy: not on disk, in a log, in history or in Home's state.
 // Ready is not agy's exit: Bridge's own sandboxed catalog probe on the same profile has to authenticate and list the account's models.
-// The URL and reply checks follow T3 Code's (MIT, pingdotgg/t3code apps/server/src/provider/antigravityAuthSupport.ts at 630f2e1;
-// docs/upstream-reference.md). The sign-in runs outside the chat boundary (it needs no listener, only Google's endpoints): in an empty
+// The URL and reply checks are adapted from T3 Code (pingdotgg/t3code apps/server/src/provider/antigravityAuthSupport.ts at 630f2e1),
+// Copyright (c) 2026 T3 Tools Inc., MIT License: see ../licenses/t3code-MIT.txt (docs/upstream-reference.md). The sign-in runs outside the chat boundary (it needs no listener, only Google's endpoints): in an empty
 // directory, with the environment allowlist, no session, no model and no tools, and it ends with the sign-in.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
@@ -23,7 +23,7 @@ export function parseSignInUrl(value) {
   const one = k => url.searchParams.getAll(k).length === 1, state = url.searchParams.get('state');
   if (url.origin !== 'https://accounts.google.com' || url.pathname !== '/o/oauth2/auth' || url.username || url.password || url.hash
     || !one('state') || !one('redirect_uri') || !one('response_type') || url.searchParams.get('response_type') !== 'code'
-    || !state || state.length > 512 || url.searchParams.get('redirect_uri') !== CODE_REDIRECT) return null;
+    || !state || state.length > 512 || /\s/.test(state) || url.searchParams.get('redirect_uri') !== CODE_REDIRECT) return null;
   return { url: value, state };
 }
 // What agy reads back: the code the Antigravity page shows, or that page's full URL, which must answer THIS sign-in (same redirect, the same
@@ -71,17 +71,23 @@ export class AntigravitySignIn {
       rmSync(run, { recursive: true, force: true });
     })();
     child.stdin.on('error', () => {}); child.on('error', () => { if (child.exitCode === null) child.emit('exit', 127, null); });
-    // agy prints its link on stdout (the prompt may go to either stream); only the first Google link is taken, nothing else is kept.
-    let seen = '';
-    const read = chunk => {
+    // As T3 does: agy's link is a complete stdout line that starts with Google's origin (trimmed); stderr is drained and ignored. A line over the
+    // bound, or a Google line that is not the code-flow link, ends the sign-in: it is never offered.
+    let partial = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
       if (attempt.pending || attempt.refused) return;
-      seen = (seen + chunk).slice(-16384);
-      const link = /https:\/\/accounts\.google\.com\/\S+/.exec(seen)?.[0]; if (!link) return;
-      const parsed = parseSignInUrl(link);
-      if (!parsed) { attempt.refused = true; attempt.stop(); return; } // not the code flow agy documents: never offered
-      attempt.pending = parsed; this.authorizationUrl = parsed.url; this.set('waiting');
-    };
-    child.stdout.on('data', read); child.stderr.on('data', read);
+      partial += chunk; let n;
+      while ((n = partial.indexOf('\n')) >= 0) {
+        const line = partial.slice(0, n).trim(); partial = partial.slice(n + 1);
+        if (!line.startsWith('https://accounts.google.com/')) continue;
+        const parsed = parseSignInUrl(line);
+        if (!parsed) { attempt.refused = true; attempt.stop(); return; }
+        attempt.pending = parsed; this.authorizationUrl = parsed.url; this.set('waiting'); partial = ''; return;
+      }
+      if (partial.length > maxUrl + 1024) { attempt.refused = true; attempt.stop(); }
+    });
+    child.stderr.resume();
     const timer = setTimeout(() => { attempt.expired = true; attempt.stop(); }, this.ttlMs); timer.unref?.();
     child.once('exit', code => {
       clearTimeout(timer); if (this.attempt === attempt) this.attempt = null;
@@ -89,7 +95,8 @@ export class AntigravitySignIn {
       if (attempt.cancelled) this.set('cancelled');
       else if (attempt.refused) this.set('failed', 'auth_unsupported_flow');
       else if (attempt.expired) this.set('expired');
-      else if (code === 0 && attempt.sent) { this.set('verifying'); this.onSignedIn(); }
+      // agy finished (with the code sent, or at once because this profile is already signed in): only Bridge's sandboxed probe decides now.
+      else if (code === 0) { this.set('verifying'); this.onSignedIn(); }
       else this.set('failed', attempt.sent ? 'auth_code_rejected' : 'auth_failed');
     });
     return this.status();
@@ -100,7 +107,7 @@ export class AntigravitySignIn {
     if (!attempt || this.phase !== 'waiting' || !attempt.pending || attempt.sent) throw failure('auth_not_waiting');
     const value = loginResponse(attempt.pending, response);
     if (value === undefined) throw failure('auth_code_invalid');
-    attempt.sent = true; attempt.child.stdin.write(value + '\n');
+    attempt.sent = true; attempt.child.stdin.end(value + '\n'); // once, then closed (as T3 does)
     this.set('verifying');
     return this.status();
   }

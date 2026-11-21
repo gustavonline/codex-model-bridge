@@ -135,3 +135,64 @@ test('Home: Sign in with Google once Gemini is on, then the link and a code fiel
     assert.deepEqual([read().controls.agyAuth.phase, read().controls.agyAuth.error], ['failed', 'auth_not_usable'], 'a sandboxed check that is signed out is a failed sign-in');
   } finally { controls.close(); if (candidate === undefined) delete process.env.BRIDGE_ANTIGRAVITY_MAC; else process.env.BRIDGE_ANTIGRAVITY_MAC = candidate; }
 });
+
+test('through the page: typing the code enables Send code, which sends it once with the scope; a second sign-in never shows the first one\'s verdict; no answer in time is said so', async () => {
+  const { prepareProviderHome, providerControls } = await import('../plugins/codex-claude/home/provider-controls.mjs');
+  const { setHarnessEnabled } = await import('../plugins/codex-claude/home/harnesses.mjs');
+  const { session } = await import('../plugins/codex-claude/home/server.mjs');
+  const { harness, hostReply, handshakeId, toolResult } = await import('./support/home-host.mjs');
+  const candidate = process.env.BRIDGE_ANTIGRAVITY_MAC; process.env.BRIDGE_ANTIGRAVITY_MAC = '1';
+  const a = fakeAgy(), p = prepareProviderHome(join(mkdtempSync(join(tmpdir(), 'bridge-agy-page-')), 'scope'));
+  const controls = providerControls(p.bindingPath, { agyAuthOptions: { env: { PATH: '/usr/bin:/bin' }, verifyMs: 400 } });
+  try {
+    setHarnessEnabled(p.state, 'antigravity', true, { platform: 'linux', find: () => a.agy });
+    const server = session(undefined, controls);
+    server({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'fixture', version: '1' } } }); server({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    const read = () => server({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'bridge_home', arguments: {} } }).result.structuredContent;
+    const call = async (action, extra = {}) => { const c = read().controls; return controls.call(action, { bindingId: c.bindingId, profileId: c.profileId, bridgeId: c.bridgeId, revision: c.revision, harness: 'antigravity', ...extra }); };
+    const nodes = n => [n, ...n.children.flatMap(nodes)];
+    const open = () => {
+      const h = harness(); h.deliver(hostReply(handshakeId(h), { hostCapabilities: { serverTools: {}, openLinks: {} } })); h.deliver(toolResult(read()));
+      for (const label of ['Connections', 'Gemini (Antigravity)']) { const b = [...nodes(h.elements['header-actions']), ...nodes(h.elements.controls)].find(n => n.tag === 'button' && n.getAttribute('aria-label') === label); for (const fn of b?.listeners.click ?? []) fn({}); }
+      return h;
+    };
+    await call('harness_sign_in'); await until(() => read().controls.agyAuth.phase === 'waiting', 'the link');
+    const h = open(), find = () => ({ input: nodes(h.elements.controls).find(n => n.id === 'gemini-code'), send: nodes(h.elements.controls).find(n => n.tag === 'button' && n.textContent === 'Send code') });
+    assert.equal(find().send.disabled, true, 'empty: nothing to send');
+    find().input.value = '4/0Agood-code'; for (const fn of find().input.listeners.input ?? []) fn({});
+    assert.equal(find().send.disabled, false, 'typing enables it without a re-render');
+    for (const fn of find().send.listeners.click ?? []) fn({});
+    const sent = h.sent('tools/call').at(-1);
+    assert.equal(sent.params.name, 'bridge_provider_harness_sign_in_code'); assert.equal(sent.params.arguments.code, '4/0Agood-code');
+    assert.equal(find().input?.value ?? '', '', 'the field is cleared once sent');
+    await controls.call('harness_sign_in_code', sent.params.arguments); // what the host would answer with
+    await until(() => readAgyFile(p.state, agySignInRequestFile), 'the request');
+    const first = readAgyFile(p.state, agySignInRequestFile).nonce;
+    writeAgyFile(p.state, agyVerifiedFile, { nonce: first, ok: true, models: 6, reason: null, at: Date.now() });
+    assert.equal(read().controls.agyAuth.phase, 'complete');
+    // A second sign-in: the earlier request and its answer are still on disk, yet it is "waiting", then "verifying", never the old verdict.
+    await call('harness_sign_in'); await until(() => read().controls.agyAuth.phase === 'waiting', 'the second link');
+    await call('harness_sign_in_code', { code: '4/0Agood-code' });
+    assert.equal(read().controls.agyAuth.phase, 'verifying', 'not the first sign-in\'s "complete"');
+    await until(() => readAgyFile(p.state, agySignInRequestFile)?.nonce !== first, 'the second request');
+    assert.equal(read().controls.agyAuth.phase, 'verifying');
+    await new Promise(r => setTimeout(r, 500));
+    assert.deepEqual([read().controls.agyAuth.phase, read().controls.agyAuth.error], ['failed', 'auth_verify_timeout'], 'no Bridge answered in time: said so');
+  } finally { controls.close(); if (candidate === undefined) delete process.env.BRIDGE_ANTIGRAVITY_MAC; else process.env.BRIDGE_ANTIGRAVITY_MAC = candidate; }
+});
+
+test('the link is a complete stdout line even when it arrives in pieces; agy finishing without a code (already signed in) goes to verification', async () => {
+  const { spawn } = await import('node:child_process');
+  const dir = mkdtempSync(join(tmpdir(), 'bridge-agy-split-')), agy = join(dir, 'agy'), link = LINK(STATE);
+  writeFileSync(agy, `#!${process.execPath}
+const l = ${JSON.stringify(link)}; process.stderr.write('"' + l + '"\\n');
+process.stdout.write('Open this link:\\n  ' + l.slice(0, 40)); setTimeout(() => { process.stdout.write(l.slice(40) + '\\n'); }, 150);
+process.stdin.on('data', () => process.exit(0));`, { mode: 0o755 });
+  const auth = new AntigravitySignIn({ env: { PATH: '/usr/bin:/bin' } });
+  await auth.begin(agy, freshProfile()); await until(() => auth.status().phase === 'waiting', 'the whole link');
+  assert.equal(auth.status().authorizationUrl, link, 'whole, from stdout; the quoted copy on stderr is ignored'); auth.cancel(); void spawn;
+  const done = join(dir, 'agy-done'); writeFileSync(done, `#!${process.execPath}\nprocess.stdout.write('Already logged in.\\n'); process.exit(0);`, { mode: 0o755 });
+  let signedIn = 0; const already = new AntigravitySignIn({ env: { PATH: '/usr/bin:/bin' }, onSignedIn: () => { signedIn++; } });
+  await already.begin(done, freshProfile()); await until(() => signedIn === 1, 'the hand-over');
+  assert.equal(already.status().phase, 'verifying', 'only Bridge\'s sandboxed probe decides');
+});

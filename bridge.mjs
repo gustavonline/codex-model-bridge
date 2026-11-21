@@ -1924,7 +1924,7 @@ export class Bridge {
   // profile, and the answer is written back for Home. Watched while the desktop is connected, and checked on every model list too.
   watchAntigravitySignIn() {
     if (!this.connectionRoot || this.agyWatch) return;
-    try { this.agyWatch = watch(this.connectionRoot, (event, name) => { if (name === agySignInRequestFile) this.antigravityVerify(); }); this.agyWatch.on('error', () => {}); this.agyWatch.unref?.(); }
+    try { this.agyWatch = watch(this.connectionRoot, (event, name) => { if (name == null || name === agySignInRequestFile) this.antigravityVerify(); }); this.agyWatch.on('error', () => {}); this.agyWatch.unref?.(); }
     catch (error) { this.log('antigravity.watch_failed', errorMetadata(error)); }
     this.antigravityVerify();
   }
@@ -1936,6 +1936,7 @@ export class Bridge {
   }
   antigravityCatalog({ refresh = false } = {}) {
     if (!refresh && this.agyCatalog) return this.agyCatalog;
+    const nonce = this.agyVerifyNonce ?? null; // the request this probe answers: fixed when it STARTS (a probe already running answers an older one)
     const pending = (async () => {
       const runtime = this.antigravityRuntime();
       if (!runtime) return { models: [], levels: [], reason: 'runtime_not_found' };
@@ -1954,7 +1955,8 @@ export class Bridge {
     })();
     this.agyCatalog = pending; pending.then(c => { if (c.models.length) this.agyCatalogReady = c; });
     // Bridge's verification of the sign-in Home ran on this profile: what the sandboxed probe found, answering Home's latest request.
-    pending.then(c => { if (this.antigravityRuntime()?.profile) try { writeAgyFile(this.connectionRoot, agyVerifiedFile, { nonce: this.agyVerifyNonce ?? null, ok: c.models.length > 0, models: c.models.length, reason: c.models.length ? null : String(c.reason ?? 'catalog_failed').slice(0, 40), at: Date.now() }); } catch (error) { this.log('antigravity.verify_write_failed', errorMetadata(error)); } });
+    // Written only while it still answers the latest request, so an older probe finishing late never overwrites the current answer.
+    pending.then(c => { if (this.antigravityRuntime()?.profile && nonce === (this.agyVerifyNonce ?? null)) try { writeAgyFile(this.connectionRoot, agyVerifiedFile, { nonce, ok: c.models.length > 0, models: c.models.length, reason: c.models.length ? null : String(c.reason ?? 'catalog_failed').slice(0, 40), at: Date.now() }); } catch (error) { this.log('antigravity.verify_write_failed', errorMetadata(error)); } });
     pending.then(c => { if (!c.models.length && this.agyCatalog === pending) setTimeout(() => { if (this.agyCatalog === pending) this.agyCatalog = null; }, 60_000).unref?.(); });
     return pending;
   }

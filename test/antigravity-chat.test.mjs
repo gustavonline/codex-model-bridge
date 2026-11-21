@@ -334,3 +334,23 @@ test('Home\'s sign-in request makes Bridge probe the catalog again, sandboxed, o
     void readFileSync;
   } finally { f.bridge.agyWatch?.close(); f.close(); }
 });
+
+test('a catalog probe already running when Home\'s request arrives answers neither that request nor overwrites its answer when it finishes late', async () => {
+  const { mkdtempSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path');
+  const { antigravityProfile, agySignInRequestFile, agyVerifiedFile, readAgyFile, writeAgyFile } = await import('../plugins/codex-claude/home/harnesses.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'bridge-agy-race-')), f = fixture('openai', { connectionRoot: root }); f.bridge.platform = 'linux'; f.bridge.sandboxAvailable = async () => true;
+  f.bridge.antigravityRuntime = () => ({ executable: '/opt/agy', home: '/nonexistent-home', profile: antigravityProfile(root) });
+  const gates = [];
+  f.bridge.antigravityOpen = () => new Promise((resolve, reject) => gates.push({ resolve, reject }));
+  const session = { catalog: { models: [{ id: 'gemini-x', name: 'Gemini X' }], levels: ['low'] }, close: async () => ({ state: 'exited' }) };
+  const until = async (check, what) => { for (let i = 0; i < 400; i++) { if (check()) return; await new Promise(r => setTimeout(r, 10)); } assert.fail(`timed out waiting for ${what}`); };
+  try {
+    const warm = f.bridge.antigravityCatalog(); await until(() => gates.length === 1, 'the warm-up probe'); // before any sign-in: signed out
+    const nonce = 'c'.repeat(32); writeAgyFile(root, agySignInRequestFile, { nonce, at: Date.now() }); f.bridge.antigravityVerify();
+    await until(() => gates.length === 2, 'the request\'s own probe');
+    gates[1].resolve(session); await until(() => readAgyFile(root, agyVerifiedFile)?.nonce === nonce, 'the answer');
+    gates[0].reject(new Error('authenticate: No browser is available here')); await warm;
+    await new Promise(r => setTimeout(r, 30));
+    assert.deepEqual([readAgyFile(root, agyVerifiedFile).nonce, readAgyFile(root, agyVerifiedFile).ok], [nonce, true], 'the late, older probe did not overwrite it');
+  } finally { f.close(); }
+});

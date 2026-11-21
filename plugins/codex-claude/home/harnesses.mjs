@@ -129,7 +129,8 @@ export function antigravityLaunch({ executable, logDir, env = process.env, profi
   const kept = Object.fromEntries(passed.filter(k => typeof env[k] === 'string').map(k => [k, env[k]]));
   const common = ['--disable-telemetry', '--log-file', join(logDir, 'acp-server.log'), ...(profile ? ['--gemini-dir', profile] : [])];
   return { command: executable, args: login ? ['acp', '--login', ...common] : ['acp', '--process-per-session', '--include-default-customizations=false', ...common], authMethod: 'oauth-personal',
-    env: { ...kept, AGY_CLI_DISABLE_AUTO_UPDATE: '1', SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0' } };
+    // PYTHONUNBUFFERED (as T3 sets): agy ships as a one-file Python bundle, and its sign-in link must reach a pipe at once.
+    env: { ...kept, AGY_CLI_DISABLE_AUTO_UPDATE: '1', SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0', PYTHONUNBUFFERED: '1' } };
 }
 // Bridge's own agy profile, in the connection store both Home and Bridge use: the one place its Google sign-in, config and agent live, for
 // sign-in, catalog probe and sessions alike. Never the owner's ~/.gemini, so the owner's agy and its Keychain login are untouched.
