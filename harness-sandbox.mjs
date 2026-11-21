@@ -22,13 +22,23 @@ import { fileURLToPath } from 'node:url';
 
 const relay = fileURLToPath(new URL('./harness-relay.mjs', import.meta.url));
 export const bwrapPath = '/usr/bin/bwrap';
+// A spawn that fails (missing or unrunnable executable) never emits 'exit' by itself, and Node then sets a negative exitCode: an 'exit' is
+// emitted once for it, so every waiter on the child ends.
+function endOnSpawnFailure(child) {
+  let ended = false; child.once('exit', () => { ended = true; });
+  child.on('error', () => { if (!ended) child.emit('exit', 127, null); });
+}
 // Whether the boundary works here: probed once per process (asynchronously, bounded), then remembered.
 let probed = null; const canaries = new Map();
 export function sandboxAvailable({ platform = process.platform, path = bwrapPath, codex = process.env.BRIDGE_REAL_CODEX } = {}) {
   // macOS: the canary runs once per Codex binary identity (path, size, mtime), so a desktop CLI update re-runs it and refuses if it fails.
   if (platform === 'darwin') {
     let identity; try { const st = statSync(codex); identity = `${codex}:${st.size}:${st.mtimeMs}`; } catch { return Promise.resolve(false); }
-    if (!canaries.has(identity)) canaries.set(identity, codexSandboxCanary(codex));
+    if (!canaries.has(identity)) {
+      const result = codexSandboxCanary(codex); canaries.set(identity, result);
+      // A failure (a stall included) refuses now and is checked again after a minute; only a pass is kept for this binary.
+      result.then(ok => { if (!ok) { const t = setTimeout(() => { if (canaries.get(identity) === result) canaries.delete(identity); }, 60_000); t.unref?.(); } });
+    }
     return canaries.get(identity);
   }
   if (platform !== 'linux') return Promise.resolve(false);
@@ -124,7 +134,7 @@ async function startBubblewrap({ command, args, cwd, env = {}, readable = [], wr
   const child = spawn(bwrap, [...bwrapArgs({ readable: inside, writable, runDir, cwd, env: inner }), '--', node, relay, ...forwards, '--', command, ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
   // stderr is drained into a bounded tail (an undrained pipe would stall the harness), and a failed spawn ends like an exit.
   let stderrTail = ''; child.stderr.on('data', b => { stderrTail = (stderrTail + b).slice(-4000); });
-  child.on('error', () => { if (child.exitCode === null) child.emit('exit', 127, null); });
+  endOnSpawnFailure(child);
   let closed = null;
   const close = () => closed ??= (async () => {
     child.stdin.end();
@@ -183,7 +193,7 @@ async function startCodexSandboxed({ command, args, cwd, env = {}, readable = []
   const upstream = Object.fromEntries(['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'].filter(k => typeof process.env[k] === 'string').map(k => [k, process.env[k]]));
   const child = spawn(codex, codexSandboxArgs({ profile, cwd, mcpSocket, command, args }), { cwd, env: { ...upstream, ...env, CODEX_HOME: codexHome, TMPDIR: tmp }, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
   let stderrTail = ''; child.stderr.on('data', b => { stderrTail = (stderrTail + b).slice(-4000); });
-  child.on('error', () => { if (child.exitCode === null) child.emit('exit', 127, null); });
+  endOnSpawnFailure(child);
   let closed = null, seen = new Set();
   const watch = setInterval(() => { for (const p of descendants(child.pid)) seen.add(p); }, 500); watch.unref?.();
   const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };

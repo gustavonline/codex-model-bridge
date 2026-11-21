@@ -120,3 +120,9 @@ test('the Codex backend runs a command with the generated profile here too, deni
     assert.deepEqual(out.trim().split('\n'), ['DENIED', 'RO', 'OWN']); assert.ok(['exited', 'killed'].includes((await box.close()).state));
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
+
+test('a boundary whose launcher cannot be spawned still ends: close() returns instead of waiting for an exit that never comes', async () => {
+  const s = await startSandboxed({ platform: 'linux', bwrap: '/nonexistent/bwrap', command: '/bin/true', args: [], cwd: '/', env: {}, writable: [], allow: [], upstream: null });
+  const r = await Promise.race([s.close(), new Promise(r => setTimeout(() => r('hung'), 5000))]);
+  assert.notEqual(r, 'hung');
+});

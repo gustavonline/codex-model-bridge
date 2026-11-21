@@ -289,3 +289,11 @@ test('a malformed application context is refused before the turn exists or agy s
     assert.deepEqual([f.bridge.records.get(id).turns.length, a.opened.length], [0, 0]);
   } finally { f.close(); }
 });
+
+test('an account whose models have no thinking levels takes the "none" Bridge advertises for them', async () => {
+  const f = fixture(); agy(f); f.bridge.antigravityCatalog = async () => ({ models: [{ id: MODEL, model: 'gemini-x', name: 'Gemini X' }], levels: [] }); try {
+    const id = await start(f);
+    assert.deepEqual(await f.bridge.request('thread/settings/update', { threadId: id, effort: 'none' }), {});
+    await assert.rejects(f.bridge.request('thread/settings/update', { threadId: id, effort: 'high' }), /offers no thinking levels/);
+  } finally { f.close(); }
+});

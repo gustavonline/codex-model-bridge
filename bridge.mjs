@@ -1889,6 +1889,7 @@ export class Bridge {
   async antigravityLevel(level) {
     if (!this.antigravityRuntime()) throw new RpcError(this.antigravityUnavailable(), -32602);
     const catalog = await this.antigravityCatalog();
+    if (!catalog.levels.length && catalog.models.length) { if (level === 'none') return; throw new RpcError('Your Antigravity account offers no thinking levels for its models; nothing was changed.', -32602); } // 'none' is what Bridge advertises
     if (!catalog.levels.length) throw new RpcError(`Gemini (Antigravity) could not list your account's thinking levels (${String(catalog.reason ?? 'unknown').slice(0, 60)}); nothing was changed.`, -32602);
     if (!catalog.levels.includes(level)) throw new RpcError(`Unsupported effort ${level} for this Antigravity model`, -32602);
   }

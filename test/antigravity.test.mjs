@@ -131,3 +131,11 @@ test('agy exiting during a resume is not a refused session; Stop while the bound
   const waiting = open({ ...base({ start: scripted({}) }), available: () => never, signal: stop2.signal }); setTimeout(() => stop2.abort(), 50);
   await assert.rejects(waiting, { code: 'harness_aborted' }, 'a boundary check that hangs does not hold Stop'); hung(true);
 });
+
+test('Stop during the boundary check spawns nothing; a refusal mentioning "unauthorized" is still a refused session', async () => {
+  let started = false; const stop = new AbortController();
+  await assert.rejects(open({ ...base({ start: async () => { started = true; } }), available: () => { stop.abort(); return true; }, signal: stop.signal }), { code: 'harness_aborted' });
+  assert.equal(started, false, 'no boundary was started after Stop');
+  const refused = scripted({ authenticate: { result: {} }, 'session/resume': { error: { code: -32002, message: 'Session not found or unauthorized for this client' } } });
+  await assert.rejects(open({ ...base({ start: refused }), resume: 'old-session' }), { code: 'harness_resume_failed' });
+});

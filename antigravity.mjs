@@ -76,11 +76,16 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
   signal?.addEventListener('abort', stopStart, { once: true });
   const detach = () => signal?.removeEventListener('abort', stopStart);
   let ready; try { ready = await step(available()); } catch (error) { detach(); throw error; }
+  if (signal?.aborted) { detach(); throw aborted(); } // Stop during the check: nothing is spawned
   if (!ready) { detach(); fail('harness_boundary_unavailable', 'Antigravity needs Model Bridge\'s process sandbox, which is not available on this system, so nothing was started.'); }
   const runDir = sandboxRunDir(), mcpSocket = join(runDir, 'mcp.sock'), http = createServer(stream => { stream.on('error', () => {}); Promise.resolve(mcpServe(stream)).catch(() => stream.destroy()); });
-  await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
-  // The real install path: the sandbox mounts the runtime's own directory, so a symlinked `agy` is resolved first.
-  const spec = antigravityLaunch({ executable: realpathSync(executable), logDir: runDir, env });
+  let spec;
+  try {
+    await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
+    // The real install path: the sandbox mounts the runtime's own directory, so a symlinked `agy` is resolved first.
+    spec = antigravityLaunch({ executable: realpathSync(executable), logDir: runDir, env });
+    if (signal?.aborted) throw aborted(); // Stop before the spawn: nothing is spawned
+  } catch (error) { detach(); http.close(); rmSync(runDir, { recursive: true, force: true }); throw error; }
   // agy works in a generated EMPTY directory, never the workspace: it has no native tools (the MCP-only agent), every file and command goes
   // through the Codex tools in the real workspace, and so a project's own agy customizations (.agents/hooks.json, rules, skills, MCP configs)
   // and Codex config are never loaded at all. The workspace itself is not even visible inside the boundary.
@@ -115,7 +120,7 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
     if (resume) sessionId = resume;
     // Only agy's own answer refusing THIS session is a failed resume (the caller may start afresh): never agy exiting, a timeout, or a
     // sign-in error returned by the resume call, which stay what they are.
-    const refusal = error => error.code === 'harness_error' && !/auth|sign.?in|login|credential/i.test(String(error.rpc?.message ?? ''));
+    const refusal = error => error.code === 'harness_error' && !/authenticat|sign.?in|log.?in|credential|No browser is available/i.test(String(error.rpc?.message ?? ''));
     const resumed = resume ? await step(acp.request(resumeMethod, { sessionId: resume, cwd: agyCwd, mcpServers })).catch(error => { throw refusal(error) ? Object.assign(error, { code: 'harness_resume_failed' }) : error; }) : null;
     const session = resume ? { sessionId: resume, ...resumed } : await step(acp.request('session/new', { cwd: agyCwd, mcpServers }));
     sessionId = session.sessionId; detach();
