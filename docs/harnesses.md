@@ -7,7 +7,7 @@ Model Bridge sits beneath the unmodified Codex desktop. A **harness** is the run
 | Codex | Codex app-server (native) | Yes | Native; Bridge does not change it. |
 | Claude Code | `@anthropic-ai/claude-agent-sdk` 0.3.325 | Yes | No native tools: every action goes through the Codex MCP tools, so Codex's sandbox and approvals apply. |
 | Custom Responses endpoints | Codex app-server with a Bridge provider | Yes, in the isolated preview | Native Codex execution against the saved endpoint; see the README for the preview's limits. |
-| Gemini (Antigravity) | ACP, `agy acp` (1.5.0 or newer) | No | A workspace's own Antigravity hooks run commands outside the Codex sandbox, without asking, at every session start and model call. See [the qualification](antigravity-qualification.md). |
+| Gemini (Antigravity) | ACP, `agy acp` (1.5.0 or newer) | Linux: yes, once turned on in Home. macOS: candidate, off unless a qualification run sets `BRIDGE_ANTIGRAVITY_MAC=1`, and then only in full-access chats | It runs inside Model Bridge's process boundary with only the Codex tools Bridge supplies, because a workspace's own Antigravity hooks would otherwise run commands outside the Codex sandbox. On macOS agy's own local listener needs a grant that opens loopback, so it runs only where the chat already has full access. See [the qualification](antigravity-qualification.md). |
 | Cursor | `@cursor/sdk` | No | The SDK reports no command or file approval support. |
 | Muse Code | `@muse-code/sdk` | No | Not qualified. |
 | Grok, fx, Kiro | ACP | No | ACP agents with their own tools; not qualified. |
@@ -29,7 +29,62 @@ A route is *(harness, connection, model)*. A model of a non-native harness is al
 
 `thread/start`, `thread/resume`, `thread/fork`, `thread/settings/update` and `turn/start` refuse a `bridge-harness/…` model before any host or SDK sees it. The check covers both `model` and the collaboration mode's model, and the prefix in any letter case.
 
-Today this is a reserved namespace plus that refusal. Execution still chooses Codex or Claude Code by model family, and bare Claude names (`opus`, `sonnet`, `haiku`, `claude-*`) keep resolving to Claude Code. `routeOf()` is the resolver the first executing third harness has to route through. That still needs the adapter refactor the architecture reviews asked for.
+An Antigravity route executes only where Antigravity is qualified and turned on: a new chat on one of its models, or a request on that chat that names its own model. Every other harness route is refused. An Antigravity chat refuses any other model on every model-carrying request, so a router never reads it as a switch. Claude Code and Codex are still chosen by model family, and bare Claude names (`opus`, `sonnet`, `haiku`, `claude-*`) keep resolving to Claude Code. A further harness still needs the adapter refactor the architecture reviews asked for.
+
+## Turning a harness on
+
+In the connection-manager Home, the Gemini (Antigravity) row in **Connect more** offers **Turn on** where its boundary is supported and `agy` is found. The choice and the resolved runtime path are stored in Bridge's own connection store (`harnesses.json`).
+
+Once it is on, Gemini appears as a connected provider, like Claude:
+- Its account's models enter the same model library and slots as every other model. They are never shown by default: add them to the picker like any other model, and an unselected one stays hidden in the native model list.
+- While it is off, or its catalog is not loaded, a saved selection stays in the library as unavailable, is not offered, and is never rewritten.
+- **Turn off** stops new chats at once; existing chats keep their history and still open, and a turn in one is refused with the reason until it is turned on again.
+
+### Signing in with Google
+
+**Status:** built on T3 Code's approach (docs/upstream-reference.md, #39485) and tested with a scripted agy and with the real agy 1.5.13 up to Google's link on Linux. **Not yet completed with a real Google account on a Mac.**
+
+Gemini uses Model Bridge's own agy profile (`antigravity-profile` in the connection store, agy's `--gemini-dir`). Sign-in, the catalog probe and every chat session use it, and the owner's `~/.gemini` and agy's Keychain login are never touched.
+
+Every launch carries the remote marker (`SSH_CONNECTION`). agy 1.5 otherwise keeps a Google sign-in in one OS keyring entry shared by every profile; with the marker, it keeps the sign-in in the profile's own file storage, which the sandboxed sessions read. agy has no other setting for this (`AGY_ACP_FORCE_FILE_STORAGE` does not exist in its binary).
+
+Once Gemini is turned on, its card in Home offers **Sign in with Google**:
+1. **Start:** Bridge runs agy's own `agy acp --login` on that profile.
+2. **Link:** agy prints a Google link. Home opens it only if it is Google's code-flow authorization with one `state` and Antigravity's hosted page as the redirect (**Open Google sign-in**).
+3. **Code:** after approving, the person pastes the code the Antigravity page shows, or that page's full address with the same `state`, into **Code from the Antigravity page**. It is written to agy's stdin once. Home keeps it only in the page's memory until it is sent, and Bridge stores it nowhere: not on disk, in a log, in Home's state or in history.
+4. **Verifying:** when agy accepts it, Home writes a request in the connection store. Bridge then probes the catalog again **inside its sandbox** on the same profile, and Home shows the result: verified with the number of models, or why not (for example signed out there).
+
+The sign-in process runs outside the chat boundary. It needs no listener, only Google's endpoints, and runs in an empty directory with the usual environment allowlist, with no session, model or tools. A chat on a signed-out profile fails at once as `unauthorized`, with the Home sign-in step.
+
+**To check on the Mac:** whether Codex records an app tool call's arguments (the code) anywhere in its own history. The code is single-use and expires within minutes.
+
+`BRIDGE_AGY` exists for development only.
+
+## Bridge chats in the chat list
+
+Native `thread/list` lists only threads that have a native user turn. A Claude or Gemini chat's host thread has none, because its model never runs there, so native's own listing never includes it. This was measured on 0.166.0 and 0.171.0-alpha.13 with throwaway profiles: no filter returns such a thread, not even `includedThreadIds`, before or after a restart.
+
+Bridge therefore answers `thread/list` with native's rows plus its own Claude and Gemini chats that have at least one turn:
+- **Filters:** archived, cwd, provider, source kind, title search, included and excluded IDs, project and section.
+- **Order and paging:** Bridge sorts by the requested key and pages with its own cursors. With no such chat, the listing is native's own paging, unchanged.
+- **Not covered:** `thread/search` does not find Bridge's chats. Ancestry and attachment filters leave them out, and a `section_position` sort keeps native's order only.
+
+## Child chats and the mailbox
+
+A Codex chat that has Bridge's `codex_bridge_sessions` tools can create a chat on another runtime with `manage create`. That works from a GPT-first chat, and `read models` lists what is available.
+- **Same boundaries:** the child gets the caller's workspace and permissions, and exactly the caller's desktop tools as the desktop gave them. If Bridge did not see them, it says so.
+- **Child to parent:** the child answers with `mailbox report`, sending a question, progress or a result. Messages are deduplicated by requestId, bounded and untrusted.
+- **Parent to child:** the parent's `read wait` returns as soon as the child reports or finishes. Its next turn carries an untrusted pointer to unread messages. Nothing starts, steers or wakes a turn by itself, and creation is capped at two levels.
+- **Shared core:** Claude Code and Antigravity children use the same tools, mailbox and permission checks.
+
+Evidence (Linux, `scripts/live-orchestration.mjs`, the real Codex app-server on this machine's own login):
+- A `gpt-6-luna` chat at low effort created a Gemini 3.8 Flash child, waited, read its mailbox question, replied, and read the answer.
+- That run used 2 GPT turns and 2 Gemini turns.
+
+Not yet observed on a Mac:
+- whether the desktop renders the created chat;
+- whether its desktop tools work for a thread the desktop did not start;
+- whether a browser page then opens visibly.
 
 ## Claude Code lifecycle
 
@@ -63,6 +118,10 @@ Not measured: the macOS desktop, Codex MCP tool calls, long histories, and T3 Co
 
 ## Known limits
 
-- Antigravity was qualified signed-in on 20 November and refused; see [the qualification](antigravity-qualification.md). An MCP-only session is possible natively, but a workspace's own hooks run outside Codex's sandbox. Gemini Neon is not in this account's server catalog.
-- `antigravityLaunch()` prepares the Google-account route. It turns auto-update off, forces file credential storage, moves only the server log, drops every ambient `GEMINI_*`, `GOOGLE_*`, `CLOUDSDK_*`, `AGY_*` and Vertex variable, and does not pass `--sandbox`. It does not isolate the profile: on 1.5.13 the login and state stay under `$HOME/.gemini`, and `GEMINI_HOME` moves nothing. An own profile would need `--gemini-dir` and its own sign-in. Nothing calls this function.
+- Antigravity was first qualified on 20 November and refused, because a workspace's own hooks run outside Codex's sandbox. It now runs inside a whole-process boundary with an MCP-only agent, in a generated empty directory, and is wired into chat routing, Home and the slots; see [the qualification](antigravity-qualification.md). Gemini Neon is not in this account's server catalog, which matches the owner-reported free plan.
+- On macOS the boundary is Codex's own sandbox. It is a candidate until a native Mac run passes: Home lists it as not qualified, and nothing runs, unless the qualification switch `BRIDGE_ANTIGRAVITY_MAC=1` is set.
+- `antigravityLaunch()` prepares the Google-account route. It turns auto-update off, moves only the server log, passes only an allowlist of the environment (dropping every `GEMINI_*`, `GOOGLE_*`, `CLOUDSDK_*` and Vertex variable), and does not pass `--sandbox`. It does not isolate the profile: on 1.5.13 the login and state stay under `$HOME/.gemini`, and `GEMINI_HOME` moves nothing.
+- Turning Antigravity off in Home takes effect at once: its models leave the list and a new chat on one is refused, though a catalog is still cached.
+- Stop, or the loss of full access on a Mac, also ends agy's start: its whole tree is closed and nothing is sent.
+- A resume timeout (rather than agy refusing the session) keeps the session and is retried on the next turn. Read mailbox messages stay on disk with the chat's state.
 - Native Mac desktop behaviour after these changes needs the desktop owner's run.

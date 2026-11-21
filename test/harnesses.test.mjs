@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { harnessModelId, parseHarnessModelId, routeOf, harnessStatuses, harnesses, antigravityLaunch, findExecutable } from '../plugins/codex-claude/home/harnesses.mjs';
+import { harnessModelId, parseHarnessModelId, routeOf, harnessStatuses, harnesses, antigravityLaunch, findExecutable, setHarnessEnabled, readHarnessSettings } from '../plugins/codex-claude/home/harnesses.mjs';
 import { prepareProviderHome, providerControls } from '../plugins/codex-claude/home/provider-controls.mjs';
 import { session } from '../plugins/codex-claude/home/server.mjs';
 import { isClaude } from '../providers.mjs';
@@ -30,16 +30,25 @@ test('a harness route is refused before any host, router or SDK sees it, for eve
     const claude = await f.start('haiku'), route = harnessModelId('antigravity', 'google-1', 'gemini-3-pro'), n = f.calls.length;
     for (const [method, params] of [['thread/start', { model: route }], ['thread/start', { collaborationMode: { mode: 'default', settings: { model: route } } }], ['turn/start', { threadId: claude, model: route, input: text('x') }],
       ['thread/settings/update', { threadId: claude, model: route }], ['thread/resume', { threadId: claude, model: route }], ['thread/fork', { threadId: claude, model: route }]])
-      await assert.rejects(f.bridge.request(method, params), e => e.code === -32602 && /Gemini \(Antigravity\) is not available in Model Bridge yet, so nothing was sent/.test(e.message), method);
+      await assert.rejects(f.bridge.request(method, params), e => e.code === -32602 && /^Gemini \(Antigravity\) (is not available in Model Bridge yet|is turned off in Model Bridge Home|has not passed its macOS qualification)/.test(e.message) && /nothing was sent/.test(e.message), method);
     assert.equal(f.calls.length, n, 'nothing reached native'); assert.equal(f.queries.length, 0, 'nor the Claude SDK'); assert.equal(f.bridge.records.get(claude).model, 'haiku');
   } finally { f.close(); }
 });
 
 test('statuses keep runtime, sign-in, models and execution as separate facts; a found runtime is never reported as ready', () => {
-  const none = harnessStatuses({ find: () => null }), found = harnessStatuses({ find: name => name === 'agy' ? '/opt/agy' : null });
+  const none = harnessStatuses({ find: () => null, platform: 'linux' }), found = harnessStatuses({ find: name => name === 'agy' ? '/opt/agy' : null, platform: 'linux' });
   assert.deepEqual(none.map(h => h.id), harnesses.filter(h => !h.executes).map(h => h.id)); assert.ok(!none.some(h => h.id === 'codex' || h.id === 'claude-agent-sdk'));
-  for (const h of [...none, ...found]) assert.deepEqual([h.signIn, h.catalog, h.execution, typeof h.reason], ['unknown', 'unknown', 'not_qualified', 'string']);
-  const agy = found.find(h => h.id === 'antigravity'); assert.deepEqual([agy.runtime, agy.minimumVersion, agy.executable], ['found', '1.5.0', 'agy']); assert.match(agy.reason, /outside the Codex sandbox/);
+  for (const h of [...none, ...found]) assert.deepEqual([h.signIn, h.catalog, typeof h.reason], ['unknown', 'unknown', 'string']);
+  for (const h of [...none, ...found].filter(h => h.id !== 'antigravity')) assert.equal(h.execution, 'not_qualified');
+  const agy = found.find(h => h.id === 'antigravity'); assert.deepEqual([agy.runtime, agy.minimumVersion, agy.executable], ['found', '1.5.0', 'agy']);
+  const other = harnessStatuses({ find: () => '/opt/agy', platform: 'win32' }).find(h => h.id === 'antigravity'), linux = harnessStatuses({ find: () => '/opt/agy', platform: 'linux' }).find(h => h.id === 'antigravity');
+  const mac = harnessStatuses({ find: () => '/opt/agy', platform: 'darwin', env: { BRIDGE_ANTIGRAVITY_MAC: '1' } }).find(h => h.id === 'antigravity');
+  const macDefault = harnessStatuses({ find: () => '/opt/agy', platform: 'darwin', env: {} }).find(h => h.id === 'antigravity');
+  assert.deepEqual([macDefault.execution, macDefault.canEnable], ['not_qualified', undefined], 'macOS stays a candidate until its native qualification');
+  assert.match(macDefault.reason, /not passed its native qualification/);
+  assert.deepEqual([other.execution, other.enabled, other.canEnable], ['not_qualified', undefined, undefined]); assert.match(other.reason, /outside the Codex sandbox/);
+  assert.deepEqual([mac.execution, mac.canEnable], ['qualified_here', true]); assert.match(mac.reason, /only in chats with full access/);
+  assert.deepEqual([linux.execution, linux.enabled, linux.canEnable], ['qualified_here', false, true]); assert.match(linux.reason, /process boundary/);
   assert.equal(none.find(h => h.id === 'antigravity').runtime, 'not_found'); assert.equal(none.find(h => h.id === 'cursor').runtime, 'not_applicable');
 });
 
@@ -50,12 +59,21 @@ test('Home lists each other harness with its real state and reason, offers no ac
   const nodes = n => [n, ...n.children.flatMap(nodes)], show = content => { const h = harness(); h.deliver(hostReply(handshakeId(h), { hostCapabilities: { serverTools: {} } })); h.deliver(toolResult(content)); return h; };
   const open = h => { const gear = [...nodes(h.elements['header-actions']), ...nodes(h.elements.controls)].find(n => n.tag === 'button' && n.getAttribute('aria-label') === 'Connections'); for (const fn of gear.listeners.click ?? []) fn({}); };
   const h = show(status); open(h);
-  const rows = nodes(h.elements.controls).filter(n => /(^| )harness-row( |$)/.test(n.className));
-  assert.ok(list.length >= 9); assert.equal(rows.length, list.length); assert.ok(rows.every(r => !nodes(r).some(n => n.tag === 'button')), 'no action for a harness that does not run here');
+  const rows = nodes(h.elements.controls).filter(n => /(^| )harness-row( |$)/.test(n.className)), title = r => nodes(r).find(n => n.tag === 'h3')?.textContent;
+  assert.ok(list.length >= 9); assert.equal(rows.length, list.length);
+  assert.ok(rows.filter(r => title(r) !== 'Gemini (Antigravity)').every(r => !nodes(r).some(n => n.tag === 'button')), 'no action for a harness that does not run here');
   const agy = rows.find(r => nodes(r).some(n => n.tag === 'h3' && n.textContent === 'Gemini (Antigravity)'));
-  assert.match(nodes(agy).map(n => n.textContent).join(' '), /(Needs agy 1\.5\.0 or newer|agy found, version not checked \(needs 1\.5\.0 or newer\)) · Sign-in and models not checked · Not available in Bridge yet/); assert.match(h.text('controls'), /hooks run commands outside the Codex sandbox/);
-  for (const [field, value] of [['execution', 'qualified'], ['signIn', 'signed_in'], ['catalog', 'fresh']]) {
-    const forged = structuredClone(status); forged.controls.harnesses[0][field] = value;
+  const agyText = nodes(agy).map(n => n.textContent).join(' '), here = list.find(x => x.id === 'antigravity');
+  if (here.execution === 'qualified_here') { // this platform has the boundary (Linux): an honest state line and, with agy found, one toggle
+    assert.match(agyText, /(Needs agy 1\.5\.0 or newer|agy found, version not checked \(needs 1\.5\.0 or newer\)) · Available on this system · Off/); assert.match(agyText, /uses|Sign in with Google here/);
+    assert.equal(nodes(agy).filter(n => n.tag === 'button' && /^Turn /.test(n.getAttribute('aria-label') ?? '')).map(n => n.getAttribute('aria-label')).join(), here.canEnable ? 'Turn on Gemini (Antigravity)' : '');
+    assert.equal(nodes(agy).some(n => n.tag === 'button' && /^Sign in/.test(n.textContent)), false, 'sign-in comes on the connected card once it is turned on, not here');
+  } else {
+    assert.match(agyText, /(Needs agy 1\.5\.0 or newer|agy found, version not checked \(needs 1\.5\.0 or newer\)) · Sign-in and models not checked · Not available in Bridge yet/); assert.match(h.text('controls'), /not passed its native qualification|hooks run commands outside the Codex sandbox/);
+    assert.equal(nodes(agy).some(n => n.tag === 'button'), false);
+  }
+  for (const [field, value] of [['execution', 'qualified'], ['execution', 'qualified_here'], ['signIn', 'signed_in'], ['catalog', 'fresh']]) {
+    const forged = structuredClone(status), target = forged.controls.harnesses.find(x => x.id === 'cursor'); target[field] = value; if (value === 'qualified_here') Object.assign(target, { enabled: false, canEnable: true });
     const g = show(forged); assert.equal(nodes(g.elements.controls).some(n => /harness-row/.test(n.className ?? '')), false, `a claimed ${field} is not shown`);
   }
 });
@@ -63,8 +81,8 @@ test('Home lists each other harness with its real state and reason, offers no ac
 test('the prepared Antigravity launch pins the Google-account route, moves only its log, and drops every ambient Gemini, Google, ADC, agy or other provider override', () => {
   const env = { HOME: '/h', PATH: '/bin', GEMINI_HOME: '/someone-elses', AGY_ACP_CCPA_PROJECT: 'p', AGY_ACP_ENABLE_OAUTH: '0', GEMINI_API_KEY: 'x', GOOGLE_API_KEY: 'x', GOOGLE_APPLICATION_CREDENTIALS: '/adc.json', GOOGLE_CLOUD_PROJECT: 'p', GOOGLE_GENAI_USE_VERTEXAI: 'true', CLOUDSDK_CONFIG: '/c', OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_OAUTH_TOKEN: 'x' };
   const spec = antigravityLaunch({ executable: '/opt/agy', logDir: '/state/agy-logs', env });
-  assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin', AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1' }); assert.equal(spec.authMethod, 'oauth-personal');
-  assert.deepEqual(spec.args, ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', '/state/agy-logs/acp-server.log']); assert.ok(!spec.args.includes('--sandbox'), 'never presented as a boundary');
+  assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin', AGY_CLI_DISABLE_AUTO_UPDATE: '1', SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0', PYTHONUNBUFFERED: '1' }); assert.equal(spec.authMethod, 'oauth-personal');
+  assert.deepEqual(spec.args, ['acp', '--process-per-session', '--include-default-customizations=false', '--disable-telemetry', '--log-file', '/state/agy-logs/acp-server.log']); assert.ok(!spec.args.includes('--sandbox'), 'never presented as a boundary');
   assert.throws(() => antigravityLaunch({ executable: 'agy', logDir: '/s' }), { code: 'route_invalid' });
 });
 
@@ -77,7 +95,7 @@ test('every ID the builder makes parses back, and a malformed harness-namespace 
     assert.equal(f.calls.length, n);
     // every model field is checked, whichever the router would prefer, and the prefix in any case
     for (const params of [{ model: 'bridge-harness/antigravity/g1/eA', collaborationMode: { mode: 'default', settings: { model: 'gpt-test' } } }, { model: 'gpt-test', collaborationMode: { mode: 'default', settings: { model: 'bridge-harness/antigravity/g1/eA' } } }, { model: 'Bridge-Harness/antigravity/g1/eA' }])
-      await assert.rejects(f.bridge.request('thread/start', params), e => e.code === -32602 && /not available in Model Bridge yet/.test(e.message), JSON.stringify(params));
+      await assert.rejects(f.bridge.request('thread/start', params), e => e.code === -32602 && /not available in Model Bridge yet|is turned off|has not passed/.test(e.message), JSON.stringify(params));
     assert.equal(f.calls.length, n, 'none reached native');
   } finally { f.close(); }
 });
@@ -86,4 +104,35 @@ test('a runtime installed in the usual per-user or Homebrew place is found even 
   const home = mkdtempSync(join(tmpdir(), 'bridge-home-')), bin = join(home, '.local/bin'); mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'agy'), '#!/bin/sh\n', { mode: 0o755 });
   assert.equal(findExecutable('agy', { path: '/usr/bin', home }), join(bin, 'agy')); assert.equal(findExecutable('agy', { path: '/usr/bin', home: '' }), null);
+});
+
+test('Home turns Antigravity on for new chats where its boundary is supported, and Bridge reads that persisted choice; anything else is refused', async () => {
+  const p = prepareProviderHome(join(mkdtempSync(join(tmpdir(), 'bridge-harness-')), 'scope')), state = p.state, bin = mkdtempSync(join(tmpdir(), 'bridge-agybin-')), agy = join(bin, 'agy');
+  writeFileSync(agy, '#!/bin/sh\n', { mode: 0o755 });
+  assert.throws(() => setHarnessEnabled(state, 'antigravity', true, { platform: 'win32', find: () => agy }), { code: 'harness_not_qualified' });
+  assert.throws(() => setHarnessEnabled(state, 'antigravity', true, { platform: 'linux', find: () => null }), { code: 'harness_runtime_not_found' });
+  assert.throws(() => setHarnessEnabled(state, 'cursor', true, { platform: 'linux', find: () => agy }), { code: 'harness_not_qualified' });
+  assert.throws(() => setHarnessEnabled(state, 'antigravity', true, { platform: 'linux', find: () => agy, expectedRevision: 5 }), { code: 'stale_revision' });
+  const saved = setHarnessEnabled(state, 'antigravity', true, { platform: 'linux', find: () => agy });
+  assert.deepEqual(readHarnessSettings(state).antigravity, { enabled: true, executable: realpathSync(agy) }); assert.equal(saved.revision, 1);
+  const f = fixture('openai', { connectionRoot: state }); f.bridge.platform = 'linux'; const before = process.env.BRIDGE_AGY; delete process.env.BRIDGE_AGY;
+  try {
+    assert.equal(f.bridge.antigravityRuntime()?.executable, realpathSync(agy), 'Bridge runs the runtime Home enabled');
+    setHarnessEnabled(state, 'antigravity', false); assert.equal(f.bridge.antigravityRuntime(), null, 'and stops when it is turned off');
+  } finally { if (before !== undefined) process.env.BRIDGE_AGY = before; f.close(); }
+});
+
+test('Home accepts the harness list on every platform variant: Linux, a Mac with and without its qualification switch, and an unsupported system', () => {
+  const p = prepareProviderHome(join(mkdtempSync(join(tmpdir(), 'bridge-harness-variants-')), 'scope')), server = session(undefined, providerControls(p.bindingPath));
+  server({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'fixture', version: '1' } } }); server({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  const status = server({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'bridge_home', arguments: {} } }).result.structuredContent;
+  const nodes = n => [n, ...n.children.flatMap(nodes)];
+  for (const [platform, env] of [['linux', {}], ['darwin', { BRIDGE_ANTIGRAVITY_MAC: '1' }], ['darwin', {}], ['win32', {}]]) for (const find of [() => '/opt/agy', () => null]) {
+    const list = harnessStatuses({ find, platform, env }), shown = structuredClone(status); shown.controls.harnesses = list;
+    for (const h of list) assert.ok(h.reason.length <= 300, `${h.id} on ${platform}: ${h.reason.length} characters`);
+    const h = harness(); h.deliver(hostReply(handshakeId(h), { hostCapabilities: { serverTools: {} } })); h.deliver(toolResult(shown));
+    const gear = [...nodes(h.elements['header-actions']), ...nodes(h.elements.controls)].find(n => n.tag === 'button' && n.getAttribute('aria-label') === 'Connections'); for (const fn of gear.listeners.click ?? []) fn({});
+    assert.equal(nodes(h.elements.controls).filter(n => /(^| )harness-row( |$)/.test(n.className)).length, list.length, `${platform} ${JSON.stringify(env)}: Home shows every row`);
+    assert.doesNotMatch(h.text('controls'), /Connection setup is not available here/);
+  }
 });

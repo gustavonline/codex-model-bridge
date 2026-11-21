@@ -1,0 +1,144 @@
+// Antigravity (Google's official `agy acp`) as a Bridge harness: one ACP session inside the whole-process boundary of harness-sandbox.mjs.
+// Layers, outermost first: the OS boundary of harness-sandbox.mjs (an empty working directory, read-only except agy's own state, no network but
+// Google's endpoints; bubblewrap on Linux, Codex's own sandbox on macOS);
+// an MCP-only main agent (`tools: []`, so agy has no native file, shell or web tools); and the permission answer, which admits only the exact
+// Codex MCP tools Bridge serves. Every effect therefore goes through Codex's own tools, its sandbox and its approvals, as for Claude Code.
+// The catalog is what the signed-in account's session reports; nothing is added. Where the boundary is unavailable `open` refuses before starting anything.
+import { createServer } from 'node:net';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { realpathSync } from 'node:fs';
+import { sandboxAvailable, sandboxRunDir, startSandboxed } from './harness-sandbox.mjs';
+import { antigravityLaunch } from './plugins/codex-claude/home/harnesses.mjs';
+
+export const googleEndpoints = Object.freeze(['daily-cloudcode-pa.googleapis.com:443', 'oauth2.googleapis.com:443']);
+const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
+
+// The MCP-only main agent definition agy loads with --agent (written by the caller into agy's own config/agents, never into a workspace).
+export const agentDefinition = name => `---\nname: ${name}\ndescription: Model Bridge main agent. It may use only the Codex tools Bridge supplies.\nmainAgent: true\nsubagent: false\ntools: []\n---\nYou are running beneath the Codex desktop app. Use only the tools you have; every action goes through them.\n`;
+
+// The permission answer: allow exactly the Codex MCP tools Bridge serves (agy titles them "Run mcp_codex_<tool>"), deny everything else.
+export function permissionAnswer(request, codexTools) {
+  const title = request?.toolCall?.title ?? '', options = Array.isArray(request?.options) ? request.options : [];
+  const tool = /^Run mcp_codex_([A-Za-z0-9_.-]{1,128})$/.exec(title)?.[1];
+  const allow = tool !== undefined && codexTools.has(tool);
+  const pick = allow ? options.find(o => o.kind === 'allow_once') : options.find(o => o.kind === 'reject_once') ?? options.find(o => String(o.kind).startsWith('reject'));
+  return { allowed: allow && !!pick, outcome: pick ? { outcome: 'selected', optionId: pick.optionId } : { outcome: 'cancelled' } };
+}
+
+// The session's own catalog: models and thinking levels exactly as the account reports them (config options `model` and `thought_level`).
+export function catalogOf(session) {
+  const options = Array.isArray(session?.configOptions) ? session.configOptions : [];
+  const values = id => (options.find(o => o.id === id && o.type === 'select')?.options ?? []).flatMap(o => 'value' in o ? [{ id: o.value, name: o.name ?? o.value }] : (o.options ?? []).map(x => ({ id: x.value, name: x.name ?? x.value })));
+  return { models: values('model'), levels: values('thought_level').map(l => l.id), current: { model: options.find(o => o.id === 'model')?.currentValue ?? null, level: options.find(o => o.id === 'thought_level')?.currentValue ?? null } };
+}
+
+// A JSON-RPC client over the harness's stdio (newline-delimited, bounded lines), answering agent requests through `onRequest`.
+export function acpClient(child, { onRequest, onNotification, maxLine = 8 * 1024 * 1024 }) {
+  let buffer = '', id = 0, closed = false; const waiting = new Map();
+  const send = message => { if (!closed) child.stdin.write(JSON.stringify(message) + '\n'); };
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', chunk => {
+    buffer += chunk; if (buffer.length > maxLine && !buffer.includes('\n')) { buffer = ''; return; }
+    let n;
+    while ((n = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, n); buffer = buffer.slice(n + 1); let m; try { m = JSON.parse(line); } catch { continue; }
+      if (m.id != null && !m.method) { const w = waiting.get(m.id); waiting.delete(m.id); w?.(m); }
+      else if (m.method && m.id != null) Promise.resolve().then(() => onRequest(m.method, m.params)).then(result => send({ jsonrpc: '2.0', id: m.id, result }), () => send({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'Not supported by Model Bridge' } }));
+      else if (m.method) onNotification(m.method, m.params);
+    }
+  });
+  const end = () => { closed = true; for (const w of waiting.values()) w({ error: { code: -32000, message: 'Antigravity ended' }, exited: true }); waiting.clear(); };
+  child.once('exit', end); child.stdin.on('error', end);
+  const request = (method, params, ms = 120_000) => new Promise((resolve, reject) => {
+    if (closed) { reject(Object.assign(new Error('Antigravity ended'), { code: 'harness_exited' })); return; }
+    const i = ++id, timer = setTimeout(() => { waiting.delete(i); reject(Object.assign(new Error(`Antigravity did not answer ${method} in time`), { code: 'harness_timeout' })); }, ms);
+    waiting.set(i, m => { clearTimeout(timer); m.error ? reject(Object.assign(new Error(`${method}: ${m.error.message}`), m.exited ? { code: 'harness_exited' } : { code: 'harness_error', rpc: m.error })) : resolve(m.result); });
+    send({ jsonrpc: '2.0', id: i, method, params });
+  });
+  return { request, notify: (method, params) => send({ jsonrpc: '2.0', method, params }) };
+}
+
+// The stdio MCP server agy launches inside the boundary: a fixed relay to Bridge's Unix socket (ACP v1 requires stdio MCP; no loopback TCP).
+export const mcpRelay = fileURLToPath(new URL('./harness-mcp-relay.mjs', import.meta.url));
+// Opens one Antigravity session. `mcpServe(stream)` serves Bridge's Codex MCP tools on one relayed connection; `codexTools` are their names; `onEvent`
+// receives { type: 'text', text } | { type: 'tool', id, title, status } | { type: 'permission', title, allowed }. `start` is injectable for tests.
+export async function open({ executable, cwd, home, agentName, mcpServe, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume', localBinding = false, stateRoot = null, signal = null, profile = null }) {
+  // `signal` ends the start at once (Stop, or a lost grant): agy's whole tree is closed and nothing is sent; the caller sees harness_aborted.
+  const aborted = () => Object.assign(new Error('The Antigravity start was stopped'), { code: 'harness_aborted' });
+  if (signal?.aborted) throw aborted();
+  // One abort listener for the whole start, removed on every exit; every wait before the session exists is raced with it.
+  let sessionId = null, stopStart = null;
+  const stopped = new Promise((_, reject) => { stopStart = () => reject(aborted()); }); stopped.catch(() => {});
+  const step = promise => signal ? Promise.race([promise, stopped]) : promise;
+  signal?.addEventListener('abort', stopStart, { once: true });
+  const detach = () => signal?.removeEventListener('abort', stopStart);
+  let ready; try { ready = await step(available()); } catch (error) { detach(); throw error; }
+  if (signal?.aborted) { detach(); throw aborted(); } // Stop during the check: nothing is spawned
+  if (!ready) { detach(); fail('harness_boundary_unavailable', 'Antigravity needs Model Bridge\'s process sandbox, which is not available on this system, so nothing was started.'); }
+  const runDir = sandboxRunDir(), mcpSocket = join(runDir, 'mcp.sock'), http = createServer(stream => { stream.on('error', () => {}); Promise.resolve(mcpServe(stream)).catch(() => stream.destroy()); });
+  let spec;
+  try {
+    await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
+    // The real install path: the sandbox mounts the runtime's own directory, so a symlinked `agy` is resolved first.
+    spec = antigravityLaunch({ executable: realpathSync(executable), logDir: runDir, env, profile });
+    if (signal?.aborted) throw aborted(); // Stop before the spawn: nothing is spawned
+  } catch (error) { detach(); http.close(); rmSync(runDir, { recursive: true, force: true }); throw error; }
+  // agy works in a generated EMPTY directory, never the workspace: it has no native tools (the MCP-only agent), every file and command goes
+  // through the Codex tools in the real workspace, and so a project's own agy customizations (.agents/hooks.json, rules, skills, MCP configs)
+  // and Codex config are never loaded at all. The workspace itself is not even visible inside the boundary.
+  const agyCwd = mkdtempSync(join(tmpdir(), 'bridge-agy-cwd-'));
+  let box, starting;
+  try { starting = start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd: agyCwd, env: spec.env, readable: [mcpRelay], writable: [profile ?? join(home, '.gemini')], allow: googleEndpoints, runDir, mcpSocket, localBinding, ...(stateRoot ? { stateRoot } : {}) }); box = await step(starting); }
+  catch (error) {
+    // Stopped while the boundary was still starting: its tree is closed as soon as it exists.
+    if (error.code === 'harness_aborted') starting?.then(b => b.close(), () => {}).catch(() => {});
+    detach(); http.close(); rmSync(agyCwd, { recursive: true, force: true }); throw error;
+  }
+  const acp = acpClient(box.child, {
+    onRequest: async (method, params) => {
+      if (method !== 'session/request_permission' || params?.sessionId !== sessionId) throw new Error('unsupported');
+      const answer = permissionAnswer(params, codexTools); onEvent({ type: 'permission', title: String(params.toolCall?.title ?? '').slice(0, 200), allowed: answer.allowed });
+      return { outcome: answer.outcome };
+    },
+    onNotification: (method, params) => {
+      if (method !== 'session/update' || params?.sessionId !== sessionId) return;
+      const u = params.update ?? {};
+      if (u.sessionUpdate === 'agent_message_chunk' && u.content?.type === 'text') onEvent({ type: 'text', text: u.content.text });
+      else if (u.sessionUpdate === 'tool_call' || u.sessionUpdate === 'tool_call_update') onEvent({ type: 'tool', id: u.toolCallId, title: u.title ?? null, status: u.status ?? null });
+    },
+  });
+  const close = async () => { const r = await box.close(); http.close(); rmSync(agyCwd, { recursive: true, force: true }); return r; };
+  try {
+    if (signal?.aborted) throw aborted();
+    await step(acp.request('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'model-bridge', version: '0.3.0' } }));
+    await step(acp.request('authenticate', { methodId: spec.authMethod }));
+    // A follow-up turn continues the chat's own agy session (resume: no history replay); a new chat gets a new session.
+    const mcpServers = [{ name: 'codex', command: process.execPath, args: [mcpRelay, mcpSocket], env: [] }];
+    if (resume) sessionId = resume;
+    // Only agy's own answer refusing THIS session is a failed resume (the caller may start afresh): never agy exiting, a timeout, or a
+    // sign-in error returned by the resume call, which stay what they are.
+    const refusal = error => error.code === 'harness_error' && !/authenticat|sign.?in|log.?in|credential|No browser is available/i.test(String(error.rpc?.message ?? ''));
+    const resumed = resume ? await step(acp.request(resumeMethod, { sessionId: resume, cwd: agyCwd, mcpServers })).catch(error => { throw refusal(error) ? Object.assign(error, { code: 'harness_resume_failed' }) : error; }) : null;
+    const session = resume ? { sessionId: resume, ...resumed } : await step(acp.request('session/new', { cwd: agyCwd, mcpServers }));
+    sessionId = session.sessionId; detach();
+    return {
+      sessionId, catalog: catalogOf(session), decisions: box.decisions,
+      // Model and thinking level are chosen from the session's own options; anything else is refused before it is sent.
+      async configure({ model, level }) {
+        const catalog = catalogOf(session);
+        if (model != null) { if (!catalog.models.some(m => m.id === model)) fail('model_not_available', 'That model is not offered by this Antigravity account.'); await acp.request('session/set_config_option', { sessionId, configId: 'model', value: model }); }
+        if (level != null) { if (!catalog.levels.includes(level)) fail('unsupported_reasoning_effort', 'That thinking level is not offered for this model.'); await acp.request('session/set_config_option', { sessionId, configId: 'thought_level', value: level }); }
+      },
+      // A prompt that outlives its bound is cancelled in the agent too, not only abandoned here.
+      prompt: async (text, { timeoutMs = 30 * 60_000 } = {}) => {
+        try { return await acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }, timeoutMs); }
+        catch (error) { if (error.code === 'harness_timeout') acp.notify('session/cancel', { sessionId }); throw error; }
+      },
+      cancel: () => acp.notify('session/cancel', { sessionId }),
+      close,
+    };
+  } catch (error) { detach(); await close(); throw error; }
+}

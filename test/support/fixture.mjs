@@ -74,7 +74,9 @@ export function fixture(configuredProvider = 'openai', bridgeOptions = {}) {
     if (method === 'thread/list') {
       // The applicable native shape ({ data, nextCursor }, as in the other Bridge tests), with a
       // planted native seed turn so that a substitution of native history for a retained chat shows.
-      const all = [...hosts.values()].map(h => ({ ...structuredClone(h.thread), preview: 'NATIVE_SEED', turns: [{ id: 'native-seed-turn' }] }));
+      // controls.nativeListing: 'materialized' lists only hosts with a native turn, as the real local index does (0.166 and 0.171 measured).
+      const all = [...hosts.values()].filter(h => controls.nativeListing !== 'materialized' || h.thread.turns.length > 0)
+        .map(h => ({ ...structuredClone(h.thread), preview: 'NATIVE_SEED', turns: [{ id: 'native-seed-turn' }] }));
       const start = Number(p.cursor ?? 0), limit = p.limit ?? 100;
       return { data: all.slice(start, start + limit), nextCursor: start + limit < all.length ? String(start + limit) : null };
     }

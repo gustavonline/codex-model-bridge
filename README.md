@@ -21,7 +21,7 @@ Keep the interface you use: model picker, conversations, browser and file panels
 - Read and coordinate bridge chats through one small session adapter.
 - Diagnose failures with correlated, rotating logs that omit message and credential content.
 
-Other harnesses that T3 Code supports (Gemini through Antigravity, Cursor, Muse, Grok, fx, Kiro, Pi, OpenCode) are listed in the connection manager Home with their real state but do not run in Bridge yet: see [harnesses](docs/harnesses.md).
+Gemini through Antigravity runs in Bridge on Linux once turned on in Home, inside a whole-process boundary and with only Codex's tools; on macOS it is a candidate, off until its native qualification passes. The other harnesses that T3 Code supports (Cursor, Muse, Grok, fx, Kiro, Pi, OpenCode) are listed in Home with their real state but do not run in Bridge yet: see [harnesses](docs/harnesses.md).
 
 No replacement UI, model API proxy, extra service or permanent daemon. The adapter lives and exits with the Codex app it was opened with. AIOS is an optional inherited plugin, not a dependency.
 

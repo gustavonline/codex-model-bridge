@@ -47,3 +47,14 @@ intent. Shell calls preserve the resolved sandbox, never escalate it, and reject
 missing permissions. A new action requiring a bridge approval prompt rejects
 unknown policies rather than inheriting a more permissive default. Preapproved
 MCP tools keep their separate configured approval rules.
+
+## Harness boundary (Antigravity)
+
+Antigravity runs inside a whole-process boundary: bubblewrap on Linux, and Codex's own sandbox on macOS, which is still in qualification. It works in an empty directory, has no native tools, and reaches the network only through an allowlisting proxy to Google's endpoints. Residual risks:
+- **Allowed hosts are a channel.** An exact-domain allowlist does not stop data from leaving through the allowed Google hosts. No proxy sees inside TLS, and code running as agy can read agy's own sign-in in Model Bridge's agy profile (`antigravity-profile` in the connection store).
+- **agy's profile is Model Bridge's own.** Bridge runs agy on its own profile, which holds only Bridge's MCP-only agent, so the owner's `~/.gemini` customizations are not loaded.
+- **Gemini sign-in runs outside the boundary.** Home's **Sign in with Google** runs agy's own `acp --login` outside the chat boundary, on Model Bridge's own agy profile, in an empty directory, with the environment allowlist and no session, model or tools; it ends with the sign-in. The one-time code the person pastes passes through Home and Bridge's Home process to agy's stdin once and is not stored. Codex may record app tool-call arguments in its own history; the code is single-use and short-lived.
+- **The login is a file.** With the remote marker agy keeps the Google sign-in in Model Bridge's profile as a file (0700 directory), readable by code running as agy inside the boundary, instead of the Keychain. The owner's own agy login is separate and untouched.
+- **The macOS catalog probe has the local listener.** With Home's Turn on as consent, the probe that lists the account's models runs with the loopback grant, whichever chat asked for the list. It sends no prompt and has no tools.
+- **macOS teardown is best effort.** There is no PID namespace. A descendant that detaches itself is killed only if it was seen first.
+- **Bridge's MCP tools carry authority.** They act with the chat's own Codex permissions, the same as for a Claude chat.
