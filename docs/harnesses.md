@@ -38,7 +38,7 @@ In the connection-manager Home, the Gemini (Antigravity) row in **Connect more**
 Once it is on, Gemini appears as a connected provider, like Claude:
 - Its account's models enter the same model library and slots as every other model. They are never shown by default: add them to the picker like any other model, and an unselected one stays hidden in the native model list.
 - While it is off, or its catalog is not loaded, a saved selection stays in the library as unavailable, is not offered, and is never rewritten.
-- **Turn off** stops new chats; existing chats keep their history.
+- **Turn off** stops new chats at once; existing chats keep their history and still open, and a turn in one is refused with the reason until it is turned on again.
 
 **Remaining onboarding gap:** Home does not run agy's Google sign-in. Sign in once with `agy` itself (Google's own browser flow); Bridge never sees the password or copies a profile. Until Home exposes that flow, onboarding is not the complete dashboard experience. `BRIDGE_AGY` exists for development only.
 
@@ -95,4 +95,6 @@ Not measured: the macOS desktop, Codex MCP tool calls, long histories, and T3 Co
 - On macOS the boundary is Codex's own sandbox. It is a candidate until a native Mac run passes: Home lists it as not qualified, and nothing runs, unless the qualification switch `BRIDGE_ANTIGRAVITY_MAC=1` is set.
 - `antigravityLaunch()` prepares the Google-account route. It turns auto-update off, forces file credential storage, moves only the server log, passes only an allowlist of the environment (dropping every `GEMINI_*`, `GOOGLE_*`, `CLOUDSDK_*` and Vertex variable), and does not pass `--sandbox`. It does not isolate the profile: on 1.5.13 the login and state stay under `$HOME/.gemini`, and `GEMINI_HOME` moves nothing.
 - Turning Antigravity off in Home takes effect at once: its models leave the list and a new chat on one is refused, though a catalog is still cached.
+- Stop, or the loss of full access on a Mac, also ends agy's start: its whole tree is closed and nothing is sent.
+- A resume timeout (rather than agy refusing the session) keeps the session and is retried on the next turn. Read mailbox messages stay on disk with the chat's state.
 - Native Mac desktop behaviour after these changes needs the desktop owner's run.

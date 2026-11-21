@@ -17,7 +17,8 @@ const [consent, agy, model = 'gemini-3.8-flash', level = 'low'] = process.argv.s
 if (consent !== '--run' || !isAbsolute(agy ?? '')) throw new Error('Usage: --run <absolute agy> [model] [level]. This sends a few short real Antigravity turns on an existing login.');
 const home = homedir(), agents = join(home, '.gemini', 'config', 'agents'), name = 'bridge-mcp-' + randomBytes(6).toString('hex'), hadAgents = existsSync(agents);
 mkdirSync(agents, { recursive: true }); writeFileSync(join(agents, name + '.md'), (await import('../antigravity.mjs')).agentDefinition(name));
-const ws = mkdtempSync(join(tmpdir(), 'bridge-agy-live-')); writeFileSync(join(ws, 'README.txt'), 'live workspace\n');
+// The Codex sandbox state (macOS) sits in its own directory, as Bridge keeps it under its state rather than the run directory's parent.
+const ws = mkdtempSync(join(tmpdir(), 'bridge-agy-live-')), stateRoot = mkdtempSync(join(tmpdir(), 'bridge-agy-live-state-')); writeFileSync(join(ws, 'README.txt'), 'live workspace\n');
 const calls = [], events = [];
 const mcpServe = async stream => {
   const server = new McpServer({ name: 'codex', version: '0' });
@@ -26,7 +27,7 @@ const mcpServe = async stream => {
 };
 const report = {}; const t0 = performance.now(); let session;
 try {
-  session = await open({ executable: agy, cwd: ws, home, agentName: name, mcpServe, codexTools: new Set(['probe_echo']), localBinding: fullAccess, onEvent: e => events.push({ ...e, at: Math.round(performance.now() - t0) }) });
+  session = await open({ executable: agy, cwd: ws, home, agentName: name, mcpServe, codexTools: new Set(['probe_echo']), localBinding: fullAccess, stateRoot, onEvent: e => events.push({ ...e, at: Math.round(performance.now() - t0) }) });
   report.openMs = Math.round(performance.now() - t0); report.catalog = session.catalog;
   await session.configure({ model, level });
   let t = performance.now(); const first = await session.prompt('Call the probe_echo tool with text live, then reply with its result.');
@@ -43,6 +44,6 @@ finally {
   const t = performance.now(); report.close = session ? await session.close() : null; report.closeMs = Math.round(performance.now() - t);
   report.leftover = execFileSync('ps', ['-eo', 'args='], { encoding: 'utf8' }).split('\n').filter(l => l.includes(ws)).length;
   report.workspaceFiles = readdirSync(ws, { recursive: true });
-  rmSync(join(agents, name + '.md'), { force: true }); if (!hadAgents) rmSync(agents, { recursive: true, force: true }); rmSync(ws, { recursive: true, force: true });
+  rmSync(join(agents, name + '.md'), { force: true }); if (!hadAgents) rmSync(agents, { recursive: true, force: true }); rmSync(ws, { recursive: true, force: true }); rmSync(stateRoot, { recursive: true, force: true });
 }
 console.log(JSON.stringify(report, null, 1));

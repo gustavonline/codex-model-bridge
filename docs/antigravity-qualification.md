@@ -63,6 +63,8 @@ Since then:
 
 **macOS local listener.** agy starts its own language server on `127.0.0.1`. Under Codex's sandbox that requires `allow_local_binding`, which the coordinator measured also opens raw loopback to every local service. So on macOS a Gemini turn runs only in a chat whose native-confirmed sandbox is full access (`dangerFullAccess`), where the chat's own Codex shell already reaches those services. Any other chat is refused, and Bridge never widens it.
 
+The account's model list is read by a short probe that belongs to no chat: it gets no prompt and no tools, but on macOS it needs the same local-listener grant. Any chat's model list can start it. It runs only with the consent recorded by Home's Turn on, and never before that, not even the boundary canary.
+
 Still not done:
 - a live macOS Gemini turn (needs the owner's agy sign-in under file storage);
 - approval mapping per Codex sandbox and approval combination is not tested.

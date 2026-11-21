@@ -11,8 +11,11 @@ import { join } from 'node:path';
 import { isAbsolute } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { createServer as createSocketServer } from 'node:net';
 import { z } from 'zod';
 import { startSandboxed, sandboxRunDir } from '../harness-sandbox.mjs';
+import { mcpRelay } from '../antigravity.mjs';
 const sandboxed = process.env.PROBE_SANDBOX === '1';
 const [consent, agy, parent, policy = 'deny', promptJson, extraJson = '[]'] = process.argv.slice(2);
 if (consent !== '--run') throw new Error('This sends real Antigravity turns on an existing login. Pass --run to authorize a few short synthetic turns.');
@@ -32,17 +35,24 @@ const http = createServer(async (req, res) => {
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined }); res.on('close', () => { transport.close(); server.close(); });
   await server.connect(transport); let body = ''; req.on('data', b => { body += b; }); req.on('end', () => transport.handleRequest(req, res, body ? JSON.parse(body) : undefined));
 });
-// Unsandboxed, the MCP endpoint is a loopback port; sandboxed, it is a Unix socket in the run directory that the sandbox relays to its own loopback.
+// Sandboxed, the same tool is served as stdio MCP on a Unix socket in the run directory, which agy reaches through Bridge's stdio relay
+// (as the adapter does: ACP v1 stdio MCP, no loopback TCP inside the boundary).
+const relayed = createSocketServer(stream => {
+  const server = new McpServer({ name: 'codex', version: '0' }); stream.on('error', () => {});
+  server.tool('probe_echo', 'Echo text back (Model Bridge probe tool).', { text: z.string() }, async ({ text }) => { report.mcpCalls.push(text); return { content: [{ type: 'text', text: 'echo:' + text }] }; });
+  stream.on('close', () => server.close().catch(() => {})); server.connect(new StdioServerTransport(stream, stream)).catch(() => stream.destroy());
+});
+// Unsandboxed, the MCP endpoint is a loopback HTTP port; sandboxed, it is the relayed Unix socket above.
 const boxDir = sandboxed ? sandboxRunDir() : join(root, 'box'); if (!sandboxed) mkdirSync(boxDir); // the sandbox's own writable run directory: never the workspace
 const mcpSocket = join(boxDir, 'mcp.sock');
-await new Promise(r => sandboxed ? http.listen(mcpSocket, r) : http.listen(0, '127.0.0.1', r)); const port = sandboxed ? null : http.address().port;
+await new Promise(r => sandboxed ? relayed.listen(mcpSocket, r) : http.listen(0, '127.0.0.1', r)); const port = sandboxed ? null : http.address().port;
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|VERTEX|AGY_|OPENAI_|ANTHROPIC_|CLAUDE|CODEX_|BRIDGE_)/.test(k)));
 Object.assign(env, { ...(process.env.GEMINI_HOME ? { GEMINI_HOME: process.env.GEMINI_HOME } : {}), AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1', BROWSER: '/bin/false', SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0', TMPDIR: join(root, 'tmp') });
 mkdirSync(env.TMPDIR);
 const t0 = performance.now();
 const acpArgs = ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(sandboxed ? boxDir : root, 'acp.log'), ...extraArgs];
 // Sandboxed: the whole agy tree runs inside harness-sandbox.mjs (read-only filesystem except agy's own state, no network but Google's endpoints).
-const box = sandboxed ? await startSandboxed({ command: agy, args: acpArgs, cwd: ws, env: { ...env, TMPDIR: '/tmp' }, writable: [join(env.HOME, '.gemini')], runDir: boxDir,
+const box = sandboxed ? await startSandboxed({ command: agy, args: acpArgs, cwd: ws, env: { ...env, TMPDIR: '/tmp' }, writable: [join(env.HOME, '.gemini')], readable: [mcpRelay], runDir: boxDir,
   allow: ['daily-cloudcode-pa.googleapis.com:443', 'oauth2.googleapis.com:443'], mcpSocket }) : null;
 if (box) report.sandbox = true;
 const child = box ? box.child : spawn(agy, acpArgs, { cwd: ws, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
@@ -74,7 +84,7 @@ try {
   const init = await rpc('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'model-bridge', version: '0.3.0' } });
   report.initMs = Math.round(performance.now() - t0); report.agent = init.agentInfo?.version;
   await rpc('authenticate', { methodId: 'oauth-personal' }); report.authMs = Math.round(performance.now() - t0);
-  const s = await rpc('session/new', { cwd: ws, mcpServers: [{ type: 'http', name: 'codex', url: box ? box.mcpUrl : `http://127.0.0.1:${port}/mcp`, headers: [] }] });
+  const s = await rpc('session/new', { cwd: ws, mcpServers: [box ? { name: 'codex', command: process.execPath, args: [mcpRelay, mcpSocket], env: [] } : { type: 'http', name: 'codex', url: `http://127.0.0.1:${port}/mcp`, headers: [] }] });
   report.sessionMs = Math.round(performance.now() - t0); const sessionId = s.sessionId;
   report.models = s.models?.availableModels?.map(m => m.modelId);
   await rpc('session/set_config_option', { sessionId, configId: 'model', value: 'gemini-3.8-flash' }).catch(e => report.errors.push('set model: ' + e.message));
