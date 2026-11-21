@@ -50,12 +50,12 @@ export function acpClient(child, { onRequest, onNotification, maxLine = 8 * 1024
       else if (m.method) onNotification(m.method, m.params);
     }
   });
-  const end = () => { closed = true; for (const w of waiting.values()) w({ error: { code: -32000, message: 'Antigravity ended' } }); waiting.clear(); };
+  const end = () => { closed = true; for (const w of waiting.values()) w({ error: { code: -32000, message: 'Antigravity ended' }, exited: true }); waiting.clear(); };
   child.once('exit', end); child.stdin.on('error', end);
   const request = (method, params, ms = 120_000) => new Promise((resolve, reject) => {
     if (closed) { reject(Object.assign(new Error('Antigravity ended'), { code: 'harness_exited' })); return; }
     const i = ++id, timer = setTimeout(() => { waiting.delete(i); reject(Object.assign(new Error(`Antigravity did not answer ${method} in time`), { code: 'harness_timeout' })); }, ms);
-    waiting.set(i, m => { clearTimeout(timer); m.error ? reject(Object.assign(new Error(`${method}: ${m.error.message}`), { code: 'harness_error', rpc: m.error })) : resolve(m.result); });
+    waiting.set(i, m => { clearTimeout(timer); m.error ? reject(Object.assign(new Error(`${method}: ${m.error.message}`), m.exited ? { code: 'harness_exited' } : { code: 'harness_error', rpc: m.error })) : resolve(m.result); });
     send({ jsonrpc: '2.0', id: i, method, params });
   });
   return { request, notify: (method, params) => send({ jsonrpc: '2.0', method, params }) };
@@ -69,7 +69,14 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
   // `signal` ends the start at once (Stop, or a lost grant): agy's whole tree is closed and nothing is sent; the caller sees harness_aborted.
   const aborted = () => Object.assign(new Error('The Antigravity start was stopped'), { code: 'harness_aborted' });
   if (signal?.aborted) throw aborted();
-  if (!(await available())) fail('harness_boundary_unavailable', 'Antigravity needs Model Bridge\'s process sandbox, which is not available on this system, so nothing was started.');
+  // One abort listener for the whole start, removed on every exit; every wait before the session exists is raced with it.
+  let sessionId = null, stopStart = null;
+  const stopped = new Promise((_, reject) => { stopStart = () => reject(aborted()); }); stopped.catch(() => {});
+  const step = promise => signal ? Promise.race([promise, stopped]) : promise;
+  signal?.addEventListener('abort', stopStart, { once: true });
+  const detach = () => signal?.removeEventListener('abort', stopStart);
+  let ready; try { ready = await step(available()); } catch (error) { detach(); throw error; }
+  if (!ready) { detach(); fail('harness_boundary_unavailable', 'Antigravity needs Model Bridge\'s process sandbox, which is not available on this system, so nothing was started.'); }
   const runDir = sandboxRunDir(), mcpSocket = join(runDir, 'mcp.sock'), http = createServer(stream => { stream.on('error', () => {}); Promise.resolve(mcpServe(stream)).catch(() => stream.destroy()); });
   await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
   // The real install path: the sandbox mounts the runtime's own directory, so a symlinked `agy` is resolved first.
@@ -78,13 +85,13 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
   // through the Codex tools in the real workspace, and so a project's own agy customizations (.agents/hooks.json, rules, skills, MCP configs)
   // and Codex config are never loaded at all. The workspace itself is not even visible inside the boundary.
   const agyCwd = mkdtempSync(join(tmpdir(), 'bridge-agy-cwd-'));
-  let box;
-  try { box = await start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd: agyCwd, env: spec.env, readable: [mcpRelay], writable: [join(home, '.gemini')], allow: googleEndpoints, runDir, mcpSocket, localBinding, ...(stateRoot ? { stateRoot } : {}) }); }
-  catch (error) { http.close(); rmSync(agyCwd, { recursive: true, force: true }); throw error; }
-  let sessionId = null, stopStart = null;
-  const stopped = new Promise((_, reject) => { stopStart = () => reject(aborted()); }); stopped.catch(() => {});
-  const step = promise => signal ? Promise.race([promise, stopped]) : promise;
-  signal?.addEventListener('abort', stopStart, { once: true });
+  let box, starting;
+  try { starting = start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd: agyCwd, env: spec.env, readable: [mcpRelay], writable: [join(home, '.gemini')], allow: googleEndpoints, runDir, mcpSocket, localBinding, ...(stateRoot ? { stateRoot } : {}) }); box = await step(starting); }
+  catch (error) {
+    // Stopped while the boundary was still starting: its tree is closed as soon as it exists.
+    if (error.code === 'harness_aborted') starting?.then(b => b.close(), () => {}).catch(() => {});
+    detach(); http.close(); rmSync(agyCwd, { recursive: true, force: true }); throw error;
+  }
   const acp = acpClient(box.child, {
     onRequest: async (method, params) => {
       if (method !== 'session/request_permission' || params?.sessionId !== sessionId) throw new Error('unsupported');
@@ -106,10 +113,12 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
     // A follow-up turn continues the chat's own agy session (resume: no history replay); a new chat gets a new session.
     const mcpServers = [{ name: 'codex', command: process.execPath, args: [mcpRelay, mcpSocket], env: [] }];
     if (resume) sessionId = resume;
-    // Only agy's own refusal of THIS session is reported as harness_resume_failed (the caller may start afresh); any other failure is itself.
-    const resumed = resume ? await step(acp.request(resumeMethod, { sessionId: resume, cwd: agyCwd, mcpServers })).catch(error => { throw error.code === 'harness_error' ? Object.assign(error, { code: 'harness_resume_failed' }) : error; }) : null;
+    // Only agy's own answer refusing THIS session is a failed resume (the caller may start afresh): never agy exiting, a timeout, or a
+    // sign-in error returned by the resume call, which stay what they are.
+    const refusal = error => error.code === 'harness_error' && !/auth|sign.?in|login|credential/i.test(String(error.rpc?.message ?? ''));
+    const resumed = resume ? await step(acp.request(resumeMethod, { sessionId: resume, cwd: agyCwd, mcpServers })).catch(error => { throw refusal(error) ? Object.assign(error, { code: 'harness_resume_failed' }) : error; }) : null;
     const session = resume ? { sessionId: resume, ...resumed } : await step(acp.request('session/new', { cwd: agyCwd, mcpServers }));
-    sessionId = session.sessionId; signal?.removeEventListener('abort', stopStart);
+    sessionId = session.sessionId; detach();
     return {
       sessionId, catalog: catalogOf(session), decisions: box.decisions,
       // Model and thinking level are chosen from the session's own options; anything else is refused before it is sent.
@@ -126,5 +135,5 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
       cancel: () => acp.notify('session/cancel', { sessionId }),
       close,
     };
-  } catch (error) { signal?.removeEventListener('abort', stopStart); await close(); throw error; }
+  } catch (error) { detach(); await close(); throw error; }
 }

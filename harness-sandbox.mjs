@@ -211,8 +211,11 @@ async function codexSandboxCanaryRun(codex, localBinding) {
   writeFileSync(secret, 'canary'); mkdirSync(join(root, 'run'));
   try {
     const box = await startCodexSandboxed({ command: '/bin/sh', args: ['-c', `cat ${JSON.stringify(secret)} >/dev/null 2>&1 && echo LEAK || echo DENIED`], cwd: root, codex, runDir: join(root, 'run'), stateRoot: join(root, 'state'), localBinding });
-    let out = ''; box.child.stdout.on('data', b => { out += b; }); await new Promise(r => box.child.once('exit', r)); await box.close();
-    return out.trim() === 'DENIED';
+    // Bounded: a canary that does not finish in 20 s is a failed boundary (refused), never a wait without end.
+    let out = '', timer; box.child.stdout.on('data', b => { out += b; });
+    const exited = await new Promise(r => { timer = setTimeout(() => r(false), 20_000); timer.unref?.(); box.child.once('exit', () => r(true)); }); clearTimeout(timer);
+    await box.close();
+    return exited && out.trim() === 'DENIED';
   } catch { return false; }
   finally { rmSync(root, { recursive: true, force: true }); rmSync(foreign, { recursive: true, force: true }); }
 }

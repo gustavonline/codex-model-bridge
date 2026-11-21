@@ -120,3 +120,18 @@ test('Home turns Antigravity on for new chats where its boundary is supported, a
     setHarnessEnabled(state, 'antigravity', false); assert.equal(f.bridge.antigravityRuntime(), null, 'and stops when it is turned off');
   } finally { if (before !== undefined) process.env.BRIDGE_AGY = before; f.close(); }
 });
+
+test('Home accepts the harness list on every platform variant: Linux, a Mac with and without its qualification switch, and an unsupported system', () => {
+  const p = prepareProviderHome(join(mkdtempSync(join(tmpdir(), 'bridge-harness-variants-')), 'scope')), server = session(undefined, providerControls(p.bindingPath));
+  server({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'fixture', version: '1' } } }); server({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  const status = server({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'bridge_home', arguments: {} } }).result.structuredContent;
+  const nodes = n => [n, ...n.children.flatMap(nodes)];
+  for (const [platform, env] of [['linux', {}], ['darwin', { BRIDGE_ANTIGRAVITY_MAC: '1' }], ['darwin', {}], ['win32', {}]]) for (const find of [() => '/opt/agy', () => null]) {
+    const list = harnessStatuses({ find, platform, env }), shown = structuredClone(status); shown.controls.harnesses = list;
+    for (const h of list) assert.ok(h.reason.length <= 300, `${h.id} on ${platform}: ${h.reason.length} characters`);
+    const h = harness(); h.deliver(hostReply(handshakeId(h), { hostCapabilities: { serverTools: {} } })); h.deliver(toolResult(shown));
+    const gear = [...nodes(h.elements['header-actions']), ...nodes(h.elements.controls)].find(n => n.tag === 'button' && n.getAttribute('aria-label') === 'Connections'); for (const fn of gear.listeners.click ?? []) fn({});
+    assert.equal(nodes(h.elements.controls).filter(n => /(^| )harness-row( |$)/.test(n.className)).length, list.length, `${platform} ${JSON.stringify(env)}: Home shows every row`);
+    assert.doesNotMatch(h.text('controls'), /Connection setup is not available here/);
+  }
+});

@@ -1150,8 +1150,8 @@ export class Bridge {
     if (['thread/start', 'thread/resume', 'thread/fork', 'thread/settings/update', 'turn/start'].includes(method)) {
       const asked = [params.collaborationMode?.settings?.model, params.model].find(isHarnessModel);
       if (asked !== undefined) {
-        // Antigravity, where it is qualified (Linux with the process boundary, agy found, its catalog loaded): a new chat on one of its models, or
-        // a request on that chat naming its own model (no change). Every other use of a harness route is refused before anything sees it.
+        // Antigravity, where it is on and qualified here (agy found, its catalog loaded): a new chat on one of its models, or a request on that
+        // chat naming its own model (no change). Every other use of a harness route is refused before anything sees it.
         const route = parseHarnessModelId(asked), own = this.records.get(params.threadId);
         // An existing Antigravity chat naming its own model is no change: it passes whatever Antigravity's state now (a reopen keeps its history;
         // a turn then says why it cannot run). A new chat needs it on, qualified here and its catalog loaded, even with a catalog cached from before.
@@ -1342,7 +1342,7 @@ export class Bridge {
         // permission changes through the native-confirmed path, exactly as for any managed chat.
         if (record.provider === 'antigravity') {
           const level = params.collaborationMode?.settings?.reasoning_effort ?? params.effort;
-          if (level != null && !(await this.antigravityCatalog()).levels.includes(level)) throw new RpcError(`Unsupported effort ${level} for this Antigravity model`, -32602);
+          if (level != null) await this.antigravityLevel(level);
           const { model: _m, effort: _e, collaborationMode: _c, ...permissions } = params;
           await this.updatePermissions(record, permissions);
           if (level != null) record.effort = level;
@@ -1858,6 +1858,13 @@ export class Bridge {
     const enabled = process.env.BRIDGE_AGY ? true : this.connectionRoot && readHarnessSettings(this.connectionRoot).antigravity?.enabled === true;
     return enabled && chosen && findExecutable(chosen) ? { executable: findExecutable(chosen), home: process.env.HOME } : null;
   }
+  // A thinking level for an Antigravity chat, refused with the true cause: off or unqualified, the catalog not loaded, or not offered.
+  async antigravityLevel(level) {
+    if (!this.antigravityRuntime()) throw new RpcError(this.antigravityUnavailable(), -32602);
+    const catalog = await this.antigravityCatalog();
+    if (!catalog.levels.length) throw new RpcError(`Gemini (Antigravity) could not list your account's thinking levels (${String(catalog.reason ?? 'unknown').slice(0, 60)}); nothing was changed.`, -32602);
+    if (!catalog.levels.includes(level)) throw new RpcError(`Unsupported effort ${level} for this Antigravity model`, -32602);
+  }
   // Why Antigravity cannot run now, in the person's terms (only when antigravityRuntime() is null).
   antigravityUnavailable() {
     const platform = this.platform ?? process.platform, h = harness('antigravity');
@@ -1928,10 +1935,7 @@ export class Bridge {
     if (!antigravityLocalBindingAllowed(this.platform ?? process.platform, record))
       throw new RpcError('On this Mac, Gemini (Antigravity) runs only in chats with full access: agy needs a local listener that a restricted Codex sandbox would have to widen. Nothing was sent; this chat keeps its permissions.', -32602);
     const level = params.collaborationMode?.settings?.reasoning_effort ?? params.effort;
-    if (level != null) {
-      const { levels } = await this.antigravityCatalog();
-      if (!levels.includes(level)) throw new RpcError(`Unsupported effort ${level} for this Antigravity model`, -32602);
-    }
+    if (level != null) await this.antigravityLevel(level);
     const context = antigravityContext(params.additionalContext); // a malformed context is refused here, before the turn exists or agy starts
     admit?.();
     if (level != null) record.effort = level;

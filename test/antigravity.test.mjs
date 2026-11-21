@@ -96,7 +96,8 @@ const scripted = script => async () => {
 rl.on('line', line => { const m = JSON.parse(line); const a = m.method === 'initialize' ? { result: { protocolVersion: 1 } } : s[m.method];
   if (a && a !== 'silent') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, ...a }) + '\\n'); }); rl.on('close', () => process.exit(0));`;
   const child = spawn(process.execPath, ['-e', code], { stdio: ['pipe', 'pipe', 'pipe'] }), box = { closed: false };
-  return Object.assign(box, { child, decisions: [], close: async () => { child.stdin.end(); await new Promise(r => child.exitCode !== null ? r() : child.once('exit', r)); box.closed = true; return { state: 'exited' }; } });
+  const gone = () => child.exitCode !== null || child.signalCode !== null; // a killed child has a signal, not an exit code
+  return Object.assign(box, { child, decisions: [], close: async () => { child.stdin.end(); await new Promise(r => gone() ? r() : child.once('exit', r)); box.closed = true; return { state: 'exited' }; } });
 };
 
 test('Stop while agy is still starting ends the start at once and closes its whole tree; nothing is sent', async () => {
@@ -114,4 +115,19 @@ test('only agy refusing the resumed session itself is reported as a failed resum
   await assert.rejects(open({ ...base({ start: refused }), resume: 'old-session' }), { code: 'harness_resume_failed' });
   const signedOut = scripted({ authenticate: { error: { code: -32000, message: 'Authentication required' } } });
   await assert.rejects(open({ ...base({ start: signedOut }), resume: 'old-session' }), { code: 'harness_error' });
+});
+
+test('agy exiting during a resume is not a refused session; Stop while the boundary itself is starting returns at once and closes it when it exists', async () => {
+  const dies = async () => { const box = await scripted({ authenticate: { result: {} } })(); setTimeout(() => box.child.kill(), 100); return box; };
+  await assert.rejects(open({ ...base({ start: dies }), resume: 'old-session' }), { code: 'harness_exited' });
+  const signIn = scripted({ authenticate: { result: {} }, 'session/resume': { error: { code: -32000, message: 'Authentication required' } } });
+  await assert.rejects(open({ ...base({ start: signIn }), resume: 'old-session' }), { code: 'harness_error' }, 'a sign-in error from the resume call stays a sign-in error');
+  let release, box; const slow = async o => { await new Promise(r => { release = r; }); return (box = await scripted({})(o)); };
+  const stop = new AbortController(), opening = open({ ...base({ start: slow }), signal: stop.signal });
+  while (!release) await new Promise(r => setTimeout(r, 5));
+  stop.abort(); await assert.rejects(opening, { code: 'harness_aborted' }, 'before the boundary has started');
+  release(); while (!box?.closed) await new Promise(r => setTimeout(r, 5)); assert.equal(box.closed, true, 'closed once it existed');
+  let hung; const never = new Promise(r => { hung = r; }), stop2 = new AbortController();
+  const waiting = open({ ...base({ start: scripted({}) }), available: () => never, signal: stop2.signal }); setTimeout(() => stop2.abort(), 50);
+  await assert.rejects(waiting, { code: 'harness_aborted' }, 'a boundary check that hangs does not hold Stop'); hung(true);
 });

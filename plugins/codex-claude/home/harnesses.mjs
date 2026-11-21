@@ -38,7 +38,8 @@ const descriptors = [
   { id: 'antigravity', label: 'Gemini (Antigravity)', transport: 'ACP: agy acp', executable: 'agy', minimumVersion: '1.5.0', auth: 'Google account in the browser (oauth-personal)', boundary: ['linux', 'darwin'],
     reason: 'A workspace\'s own Antigravity hooks run commands outside the Codex sandbox, without asking, at every session start and model call. It stays off until its whole process runs inside a boundary that matches Codex permissions.',
     reasonWhereSupported: 'Runs inside Model Bridge\'s process boundary, with only the Codex tools Bridge supplies. Sign in once with agy itself; Bridge never sees your Google password. Your account\'s models appear in the model list for new chats.',
-    reasonWhereSupportedDarwin: 'Runs inside Codex\'s own sandbox with only the Codex tools Bridge supplies. On this Mac it runs only in chats with full access, because agy\'s own local listener needs a grant that also opens this Mac\'s local network services. Turning it on accepts that for full-access chats. Sign in once with agy itself.',
+    // Home shows at most 300 characters per reason (server.mjs); test/harnesses.test.mjs checks every variant.
+    reasonWhereSupportedDarwin: 'Runs in Codex\'s own sandbox with only the Codex tools Bridge supplies. On a Mac only in chats with full access: agy\'s local listener needs a grant that also opens local network services. Turning it on accepts that for those chats. Sign in once with agy itself.',
     reasonCandidateDarwin: 'The macOS boundary (Codex\'s own sandbox) has not passed its native qualification on a Mac yet, so it stays off here. A qualification run enables it with BRIDGE_ANTIGRAVITY_MAC=1.' },
   { id: 'cursor', label: 'Cursor', transport: '@cursor/sdk', auth: 'Cursor account',
     reason: 'The Cursor SDK reports no command or file approval support, so Codex permissions cannot be honoured.' },

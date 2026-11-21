@@ -258,11 +258,13 @@ test('an existing Gemini chat reopens on its own model while Antigravity is off 
     const id = await start(f), one = (await f.send(id, 'first')).turn; await f.done(one.id);
     f.restart(); agy(f); f.bridge.antigravityCatalog = async () => ({ models: [], levels: [], reason: 'catalog_failed' });
     assert.equal((await f.bridge.request('thread/resume', { threadId: id, model: MODEL })).thread.id, id, 'catalog failed: it still opens');
-    f.restart(); agy(f); f.bridge.antigravityRuntime = () => null; f.bridge.antigravityUnavailable = () => 'Gemini (Antigravity) is turned off in Model Bridge Home, so nothing was sent.';
+    await assert.rejects(f.bridge.request('thread/settings/update', { threadId: id, effort: 'low' }), /could not list your account's thinking levels \(catalog_failed\)/);
+    f.restart(); const b = agy(f); f.bridge.antigravityRuntime = () => null; f.bridge.antigravityUnavailable = () => 'Gemini (Antigravity) is turned off in Model Bridge Home, so nothing was sent.';
     assert.equal((await f.bridge.request('thread/resume', { threadId: id, model: MODEL })).thread.id, id, 'turned off: it still opens');
     assert.equal(f.bridge.records.get(id).turns.length, 1, 'with its history');
     await assert.rejects(f.send(id, 'second'), /turned off in Model Bridge Home/);
-    assert.deepEqual([f.bridge.records.get(id).turns.length, a.opened.length], [1, 1], 'no turn recorded, no agy started');
+    await assert.rejects(f.bridge.request('thread/settings/update', { threadId: id, effort: 'low' }), /turned off in Model Bridge Home/);
+    assert.deepEqual([f.bridge.records.get(id).turns.length, a.opened.length, b.opened.length], [1, 1, 0], 'no turn recorded, no agy started after the restart');
     await assert.rejects(f.bridge.request('thread/resume', { threadId: id, model: 'gpt-test' }), /keeps its model/);
   } finally { f.close(); }
 });
@@ -277,5 +279,13 @@ test('creating a Gemini child while Antigravity is turned off is a definite refu
     const first = await create(), again = await create();
     assert.match(first, /turned off in Model Bridge Home|not available|has not passed/); assert.equal(again, first, 'the same refusal');
     assert.doesNotMatch(again, /uncertain/); assert.equal([...f.bridge.records.values()].filter(r => r.provider === 'antigravity').length, 0);
+  } finally { f.close(); }
+});
+
+test('a malformed application context is refused before the turn exists or agy starts', async () => {
+  const f = fixture(), a = agy(f); try {
+    const id = await start(f);
+    await assert.rejects(f.bridge.request('turn/start', { threadId: id, input: [{ type: 'text', text: 'x' }], additionalContext: { bogus: { kind: 'command', value: 'rm -rf' } } }), /additional context/i);
+    assert.deepEqual([f.bridge.records.get(id).turns.length, a.opened.length], [0, 0]);
   } finally { f.close(); }
 });
