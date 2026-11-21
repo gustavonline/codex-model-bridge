@@ -37,9 +37,10 @@ export function sandboxAvailable({ platform = process.platform, path = bwrapPath
     if (!canaries.has(identity)) {
       const result = codexSandboxCanary(codex); canaries.set(identity, result);
       // A failure (a stall included) refuses now and is checked again after a minute; only a pass is kept for this binary.
-      result.then(ok => { if (!ok) { const t = setTimeout(() => { if (canaries.get(identity) === result) canaries.delete(identity); }, 60_000); t.unref?.(); } });
+      const retry = () => { const t = setTimeout(() => { if (canaries.get(identity) === result) canaries.delete(identity); }, 60_000); t.unref?.(); };
+      result.then(ok => { if (!ok) retry(); }, retry); // a canary that throws is a failure too: refused now, retried later, never unhandled
     }
-    return canaries.get(identity);
+    return canaries.get(identity).catch(() => false);
   }
   if (platform !== 'linux') return Promise.resolve(false);
   return probed ??= new Promise(resolve => {

@@ -56,3 +56,27 @@ test('without a Bridge chat to add, thread/list is native\'s own paging, unchang
     assert.equal(f.calls.filter(c => c.method === 'thread/list').at(-1).params.limit, 1, 'native was asked exactly as the caller asked');
   } finally { f.close(); }
 });
+
+test('an ephemeral chat is never listed; a Claude chat switched to GPT stays listed until native lists it after its first GPT turn, then appears once', async () => {
+  const f = real(); try {
+    const eph = await f.start('haiku', { ephemeral: true }); const e = (await f.send(eph, 'ephemeral')).turn; await f.done(e.id);
+    assert.ok(!ids(await list(f)).includes(eph), 'ephemeral: not listed (native lists none)');
+    const id = await f.start('haiku'); const t = (await f.send(id, 'claude first')).turn; await f.done(t.id);
+    await f.bridge.request('thread/settings/update', { threadId: id, model: 'gpt-test' });
+    assert.equal(f.bridge.records.get(id).provider, 'native');
+    assert.ok(ids(await list(f)).includes(id), 'switched to GPT before any GPT turn: still listed');
+    f.restart(); assert.ok(ids(await list(f)).includes(id), 'and after a restart');
+    const g = await f.send(id, 'now gpt'); await f.done(g.turn.id);
+    const after = ids(await list(f)); assert.equal(after.filter(x => x === id).length, 1, 'once native lists it, exactly once');
+  } finally { f.close(); }
+});
+
+test('the merged listing is ordered by the requested direction, Bridge and native rows together, and ties are broken by ID', async () => {
+  const f = real(); try {
+    const gpt = (await f.bridge.request('thread/start', { cwd: f.statePath })).thread.id; await f.bridge.request('turn/start', { threadId: gpt, input: [{ type: 'text', text: 'native' }] });
+    for (let i = 0; i < 3; i++) { const id = await f.start('haiku'); const t = (await f.send(id, `c${i}`)).turn; await f.done(t.id); }
+    const desc = ids(await list(f)), asc = ids(await list(f, { sortDirection: 'asc' }));
+    assert.equal(desc.length, 4); assert.ok(desc.includes(gpt));
+    assert.deepEqual(asc, [...desc].reverse(), 'one total order, reversed');
+  } finally { f.close(); }
+});

@@ -335,15 +335,17 @@ export class Bridge {
     if (!thread || thread.id !== record.thread.id) return;
     // Native may rewrite the rollout on resume/revert. A desktop can still
     // echo a path this same thread previously advertised; it is only a hint.
+    const resumeCount = record.resumePaths?.length ?? -1;
     record.resumePaths = [...new Set([...(record.resumePaths ?? []), record.thread.path, thread.path]
       .filter(path => typeof path === 'string' && path.length > 0))];
     // Native owns project/title/workspace metadata. The bridge owns the visible
     // Claude transcript, preview and activity, never the native seed turns.
     const { turns, preview, status, model, modelProvider, reasoningEffort, updatedAt, ...metadata } = thread;
+    const before = JSON.stringify([record.thread, record.updatedAt]);
     record.thread = { ...record.thread, ...metadata,
       ...(record.bridgeForkedFromId ? { forkedFromId: record.bridgeForkedFromId } : {}) };
     record.updatedAt = Math.max(record.updatedAt ?? 0, updatedAt ?? 0);
-    this.save(record);
+    if (JSON.stringify([record.thread, record.updatedAt]) !== before || record.resumePaths.length !== resumeCount) this.save(record); // a listing re-reads many rows
   }
   // What the desktop is told about a managed chat. The desktop's state callback for thread/settings/updated reads collaborationMode.settings of the incoming event, so it is
   // always present (the pinned ThreadSettings has no optional field): native's own mode is kept when it reported one, otherwise the chat's saved mode instructions with
@@ -2083,8 +2085,9 @@ const antigravitySignInNeeded = 'Gemini (Antigravity) is not signed in for Model
 const INTERACTIVE = new Set(['cli', 'vscode', 'appServer']);
 function listable(record, f, view) {
   const t = record.thread, kind = typeof t.source === 'string' ? t.source : t.source?.subAgent ? 'subAgent' : 'unknown';
-  // Only a chat whose model runs outside native (Claude Code, Antigravity): a managed native chat has native turns, so native decides its rows.
-  if (!['claude', 'antigravity'].includes(record.provider ?? 'claude')) return false;
+  // An ephemeral chat is never listed (native lists none). A managed chat that has had a native turn is native's to list; any other Bridge chat with a
+  // turn has a host native cannot list (a Claude or Gemini chat, or one switched to GPT before its first GPT turn), so Bridge lists it.
+  if (t.ephemeral || (record.provider === 'native' && record.nativeFirstTurnId)) return false;
   if (!record.turns.length || (!!record.archived) !== (f.archived === true)) return false;
   if (f.parentThreadId != null || f.ancestorThreadId != null || f.attachedToThreadId != null) return false;
   if (f.cwd != null && ![].concat(f.cwd).includes(t.cwd)) return false;
