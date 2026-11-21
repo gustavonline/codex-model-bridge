@@ -17,7 +17,7 @@
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, statSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
-import { join, isAbsolute, relative } from 'node:path';
+import { join, isAbsolute, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { startSandboxed, sandboxAvailable, sandboxRunDir } from '../harness-sandbox.mjs';
 import { googleEndpoints } from '../antigravity.mjs';
@@ -28,8 +28,13 @@ const { positionals: [step], values } = parseArgs({ allowPositionals: true, opti
 if (!['a', 'a4', 'c1', 'c4', 'login'].includes(step) || !isAbsolute(values.agy ?? '') || (step !== 'c1' && !isAbsolute(values.profile ?? '')))
   throw new Error('Usage: <a|a4|c1|c4|login> --agy <absolute agy> --profile <absolute Bridge profile dir> [--wait]. Sends no prompt; calls no model.');
 // The Bridge profile is never the owner's agy profile or a home directory (it becomes writable inside the boundary).
-if (values.profile && [homedir(), join(homedir(), '.gemini')].some(p => values.profile === p || p.startsWith(values.profile + '/') || values.profile.startsWith(join(homedir(), '.gemini') + '/')))
-  throw new Error('--profile must be a fresh directory of its own, not your home or ~/.gemini.');
+// Compared after resolving `.`/`..` and trailing slashes, and case-insensitively on macOS (APFS is usually case-insensitive).
+const canon = p => { const r = resolve(p); return process.platform === 'darwin' ? r.toLowerCase() : r; };
+if (values.profile) {
+  const profile = canon(values.profile), home = canon(homedir()), gemini = canon(join(homedir(), '.gemini'));
+  if (profile === gemini || profile.startsWith(gemini + '/') || home === profile || home.startsWith(profile === '/' ? '/' : profile + '/'))
+    throw new Error('--profile must be a fresh directory of its own, not your home or ~/.gemini.');
+}
 const report = { step, platform: process.platform, agy: realpathSync(values.agy), startedAt: new Date().toISOString() };
 const t0 = Date.now(), ms = () => Date.now() - t0;
 const out = () => { console.log(JSON.stringify(report, null, 1)); };
