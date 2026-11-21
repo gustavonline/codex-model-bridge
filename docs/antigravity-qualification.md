@@ -66,7 +66,7 @@ Since then:
 The account's model list is read by a short probe that belongs to no chat: it gets no prompt and no tools, but on macOS it needs the same local-listener grant. Any chat's model list can start it. It runs only with the consent recorded by Home's Turn on, and never before that, not even the boundary canary.
 
 **Sign-in (agy 1.5.13, measured with throwaway profiles, nothing completed).**
-- **`agy acp --login`:** sends Google back to `https://antigravity.google/oauth-callback` and asks for the code to be pasted, with or without a terminal. Model Bridge does not use it.
+- **`agy acp --login`:** sends Google back to `https://antigravity.google/oauth-callback` and asks for the code to be pasted, with or without a terminal. Home's sign-in does not offer it yet; the qualification step `login` runs it inside the boundary.
 - **ACP `authenticate` (`oauth-personal`) on a signed-out profile that may open a browser:** agy calls the system opener with an authorization that returns to `http://localhost:<port>/auth/callback`, its own listener. No paste is involved. This is Home's sign-in.
 - **The same call with the remote marker (`SSH_CONNECTION`):** refused at once with "No browser is available here". Every session and catalog probe sets that marker.
 - **File-storage login:** lives at `~/.gemini/antigravity-cli/antigravity-oauth-token`, but only where agy has no OS keyring (headless Linux). On macOS agy uses the Keychain. Home reports only whether the file exists, and never reads it.
@@ -86,7 +86,11 @@ On Linux (bubblewrap):
 - `c1` lists 6 models on the owner's login.
 - `c4` is signed out (the login is keyed per profile).
 
-On macOS these steps decide between a Bridge-owned profile signed in inside Codex's sandbox (where agy's Keychain write fails and it falls back to its file storage) and running agy outside the sandbox in full-access chats.
+- **`login`:** agy's own `acp --login` runs inside the boundary on the Bridge profile. Its Google page is hosted, so no local listener is needed. The person pastes agy's one-time code in the terminal; it goes straight to agy's stdin and is not written anywhere by the script, though the terminal echoes it into its own scrollback. Then `a4` reads the login back.
+
+On macOS these steps decide between two routes:
+- a Bridge-owned profile signed in inside Codex's sandbox, where agy's Keychain write is **expected** (not yet measured) to fail and fall back to its file storage;
+- running agy outside the sandbox in full-access chats.
 
 Still not done:
 - a live macOS Gemini turn: no sandboxed session on the Mac has a usable login yet (agy's Mac login is in the Keychain);

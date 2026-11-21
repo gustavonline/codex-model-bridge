@@ -12,7 +12,7 @@
 //         keep the login in its file storage under the profile; the new profile files are listed (names and sizes only). Then run a4.
 //   c1    C1: outside the boundary, the owner's own login (no --gemini-dir), with the marker: authenticate and session/new.
 //   c4    C4: the same with a fresh --gemini-dir: signed in means agy's Keychain item is shared, refused means it is keyed per directory.
-// Usage: node scripts/qualify-antigravity-auth.mjs <a|a4|c1|c4> --agy <absolute agy> --profile <absolute Bridge profile dir> [--wait]
+// Usage: node scripts/qualify-antigravity-auth.mjs <a|a4|c1|c4|login> --agy <absolute agy> --profile <absolute Bridge profile dir> [--wait]
 //        (macOS also needs BRIDGE_REAL_CODEX: the desktop's Codex CLI). Prints one JSON report; secrets are never printed or read.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, statSync, existsSync, realpathSync } from 'node:fs';
@@ -26,7 +26,10 @@ import { validSignInUrl, signedOut } from '../plugins/codex-claude/home/antigrav
 
 const { positionals: [step], values } = parseArgs({ allowPositionals: true, options: { agy: { type: 'string' }, profile: { type: 'string' }, wait: { type: 'boolean', default: false } } });
 if (!['a', 'a4', 'c1', 'c4', 'login'].includes(step) || !isAbsolute(values.agy ?? '') || (step !== 'c1' && !isAbsolute(values.profile ?? '')))
-  throw new Error('Usage: <a|a4|c1|c4> --agy <absolute agy> --profile <absolute Bridge profile dir> [--wait]. Sends no prompt; calls no model.');
+  throw new Error('Usage: <a|a4|c1|c4|login> --agy <absolute agy> --profile <absolute Bridge profile dir> [--wait]. Sends no prompt; calls no model.');
+// The Bridge profile is never the owner's agy profile or a home directory (it becomes writable inside the boundary).
+if (values.profile && [homedir(), join(homedir(), '.gemini')].some(p => values.profile === p || p.startsWith(values.profile + '/') || values.profile.startsWith(join(homedir(), '.gemini') + '/')))
+  throw new Error('--profile must be a fresh directory of its own, not your home or ~/.gemini.');
 const report = { step, platform: process.platform, agy: realpathSync(values.agy), startedAt: new Date().toISOString() };
 const t0 = Date.now(), ms = () => Date.now() - t0;
 const out = () => { console.log(JSON.stringify(report, null, 1)); };
@@ -68,7 +71,7 @@ async function launch({ inside, interactive, profile }) {
   report.boundary = process.platform === 'darwin' ? 'codex sandbox (local binding granted)' : 'bubblewrap';
   return { rpc: peer(box.child), url, run, cwd, close: async () => { report.close = await box.close(); rmSync(cwd, { recursive: true, force: true }); }, box };
 }
-const logHints = run => { try { return readFileSync(join(run, 'acp-server.log'), 'utf8').split('\n').filter(l => /refus|denied|blocked|not allowed|keychain|keyring|fallback|file storage|secret/i.test(l)).slice(-12).map(l => l.replace(/ya29\.[\w.-]+|1\/\/[\w.-]+|eyJ[\w.-]+/g, '<redacted>').slice(0, 240)); } catch { return []; } };
+const logHints = run => { try { return readFileSync(join(run, 'acp-server.log'), 'utf8').split('\n').filter(l => /refus|denied|blocked|not allowed|keychain|keyring|fallback|file storage|secret/i.test(l)).slice(-12).map(l => l.replace(/ya29\.[\w.-]+|1\/\/[\w.-]+|eyJ[\w.-]+|4\/[\w-]+|code=[^&\s"]+/g, '<redacted>').slice(0, 240)); } catch { return []; } };
 
 try {
   if (step === 'login') {
@@ -78,15 +81,24 @@ try {
     const run = sandboxRunDir(), cwd = mkdtempSync(join(tmpdir(), 'bridge-agy-qual-cwd-'));
     const spec = antigravityLaunch({ executable: realpathSync(values.agy), logDir: run, env: process.env, interactive: true, profile: values.profile });
     const args = ['acp', '--login', '--disable-telemetry', '--log-file', join(run, 'acp-server.log'), '--gemini-dir', values.profile];
-    const box = await startSandboxed({ command: spec.command, args, cwd, env: spec.env, writable: [values.profile], allow: googleEndpoints, runDir: run, localBinding: false });
+    // agy's own hosted page is printed for the person; a no-op opener keeps agy from also opening it (deterministic runs).
+    const bin = join(run, 'bin'); mkdirSync(bin); writeFileSync(join(bin, 'open'), '#!/bin/sh\nexit 0\n', { mode: 0o700 }); writeFileSync(join(bin, 'xdg-open'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    const env = { ...spec.env, PATH: `${bin}:${spec.env.PATH ?? '/usr/bin:/bin'}`, BROWSER: join(bin, 'open') };
+    const box = await startSandboxed({ command: spec.command, args, cwd, env, readable: [bin], writable: [values.profile], allow: googleEndpoints, runDir: run, localBinding: false });
     report.boundary = process.platform === 'darwin' ? 'codex sandbox (no local binding)' : 'bubblewrap';
     // agy's own prompt goes to this terminal; what the person types goes to agy's stdin only. Neither is stored or added to the report.
-    box.child.stdout.pipe(process.stderr); box.child.stderr.on('data', () => {});
+    // (Its stdin is a pipe, so the terminal echoes the pasted code into its own scrollback; nothing else keeps it.)
+    box.child.stdout.pipe(process.stderr); box.child.stderr.pipe(process.stderr);
+    box.child.stdin.on('error', () => {}); // a line typed as agy exits must not crash the report or skip close()
     process.stdin.pipe(box.child.stdin);
+    const stop = async () => { process.stdin.unpipe(box.child.stdin); await box.close(); rmSync(cwd, { recursive: true, force: true }); process.exit(130); };
+    process.once('SIGINT', stop);
     const code = await new Promise(r => box.child.once('exit', c => r(c)));
+    process.removeListener('SIGINT', stop);
     process.stdin.unpipe(box.child.stdin); process.stdin.pause();
     report.login = { exitCode: code, ms: ms(), profileNew: listing(values.profile).filter(r => !profileBefore.some(b => b[0] === r[0])).map(([p, size]) => ({ path: p, size })),
-      geminiUnchanged: JSON.stringify(listing(join(homedir(), '.gemini')).map(r => r.slice(0, 2))) === JSON.stringify(geminiBefore.map(r => r.slice(0, 2))), logHints: logHints(run) };
+      geminiUnchanged: JSON.stringify(listing(join(homedir(), '.gemini')).map(r => r.slice(0, 2))) === JSON.stringify(geminiBefore.map(r => r.slice(0, 2))), logHints: logHints(run),
+      proxyDecisions: (box.decisions ?? []).map(d => ({ host: d.host ?? d.target, allowed: d.allowed })) };
     report.close = await box.close(); rmSync(cwd, { recursive: true, force: true });
   } else if (step === 'a') {
     const geminiBefore = listing(join(homedir(), '.gemini')), profileBefore = listing(values.profile);

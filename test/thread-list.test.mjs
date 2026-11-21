@@ -67,6 +67,7 @@ test('an ephemeral chat is never listed; a Claude chat switched to GPT stays lis
     assert.ok(ids(await list(f)).includes(id), 'switched to GPT before any GPT turn: still listed');
     f.restart(); assert.ok(ids(await list(f)).includes(id), 'and after a restart');
     const g = await f.send(id, 'now gpt'); await f.done(g.turn.id);
+    assert.ok(f.bridge.records.get(id).nativeFirstTurnId, 'it now has a native turn, so native lists it and Bridge does not add it');
     const after = ids(await list(f)); assert.equal(after.filter(x => x === id).length, 1, 'once native lists it, exactly once');
   } finally { f.close(); }
 });

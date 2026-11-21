@@ -73,7 +73,7 @@ export class AntigravitySignIn {
     const close = async () => { child.stdin.end(); stop(); await Promise.race([exited, new Promise(r => setTimeout(r, 3000).unref?.())]); rmSync(run, { recursive: true, force: true }); };
     return { child, rpc: acp(child), url, close };
   }
-  // Begin a browser sign-in. Already signed in is a completed sign-in at once (agy opens nothing).
+  // Begin a browser sign-in. agy may answer at once as already signed in; that counts as complete only if the login the sessions read is saved.
   async begin(executable, home = this.env.HOME) {
     if (this.attempt) throw failure('auth_in_progress', 'A Gemini sign-in is already in progress');
     const attempt = this.attempt = { cancelled: false };
