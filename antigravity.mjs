@@ -65,7 +65,7 @@ export function acpClient(child, { onRequest, onNotification, maxLine = 8 * 1024
 export const mcpRelay = fileURLToPath(new URL('./harness-mcp-relay.mjs', import.meta.url));
 // Opens one Antigravity session. `mcpServe(stream)` serves Bridge's Codex MCP tools on one relayed connection; `codexTools` are their names; `onEvent`
 // receives { type: 'text', text } | { type: 'tool', id, title, status } | { type: 'permission', title, allowed }. `start` is injectable for tests.
-export async function open({ executable, cwd, home, agentName, mcpServe, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume', localBinding = false, stateRoot = null, signal = null }) {
+export async function open({ executable, cwd, home, agentName, mcpServe, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume', localBinding = false, stateRoot = null, signal = null, profile = null }) {
   // `signal` ends the start at once (Stop, or a lost grant): agy's whole tree is closed and nothing is sent; the caller sees harness_aborted.
   const aborted = () => Object.assign(new Error('The Antigravity start was stopped'), { code: 'harness_aborted' });
   if (signal?.aborted) throw aborted();
@@ -83,7 +83,7 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
   try {
     await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
     // The real install path: the sandbox mounts the runtime's own directory, so a symlinked `agy` is resolved first.
-    spec = antigravityLaunch({ executable: realpathSync(executable), logDir: runDir, env });
+    spec = antigravityLaunch({ executable: realpathSync(executable), logDir: runDir, env, profile });
     if (signal?.aborted) throw aborted(); // Stop before the spawn: nothing is spawned
   } catch (error) { detach(); http.close(); rmSync(runDir, { recursive: true, force: true }); throw error; }
   // agy works in a generated EMPTY directory, never the workspace: it has no native tools (the MCP-only agent), every file and command goes
@@ -91,7 +91,7 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
   // and Codex config are never loaded at all. The workspace itself is not even visible inside the boundary.
   const agyCwd = mkdtempSync(join(tmpdir(), 'bridge-agy-cwd-'));
   let box, starting;
-  try { starting = start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd: agyCwd, env: spec.env, readable: [mcpRelay], writable: [join(home, '.gemini')], allow: googleEndpoints, runDir, mcpSocket, localBinding, ...(stateRoot ? { stateRoot } : {}) }); box = await step(starting); }
+  try { starting = start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd: agyCwd, env: spec.env, readable: [mcpRelay], writable: [profile ?? join(home, '.gemini')], allow: googleEndpoints, runDir, mcpSocket, localBinding, ...(stateRoot ? { stateRoot } : {}) }); box = await step(starting); }
   catch (error) {
     // Stopped while the boundary was still starting: its tree is closed as soon as it exists.
     if (error.code === 'harness_aborted') starting?.then(b => b.close(), () => {}).catch(() => {});

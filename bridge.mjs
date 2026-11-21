@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, renameSync, realpathSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, renameSync, realpathSync, watch } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -26,7 +26,7 @@ import { messageStream, submission, steerTurn, steeringResult, settleSteering } 
 import { claudeDecision, claudeDenial, mergeClaudeModels, normalizeModels, recordCatalog, recordOffered, storedModels } from './connections.mjs';
 import { ResponsesRouter } from './plugins/codex-claude/home/providers.mjs';
 import { signedOut } from './plugins/codex-claude/home/antigravity-auth.mjs';
-import { boundarySupported, findExecutable, harness, harnessModelId, harnessRefusal, isHarnessModel, parseHarnessModelId, readHarnessSettings } from './plugins/codex-claude/home/harnesses.mjs';
+import { agySignInRequestFile, agyVerifiedFile, antigravityProfile, readAgyFile, writeAgyFile, boundarySupported, findExecutable, harness, harnessModelId, harnessRefusal, isHarnessModel, parseHarnessModelId, readHarnessSettings } from './plugins/codex-claude/home/harnesses.mjs';
 import { agentDefinition, open as openAntigravity } from './antigravity.mjs';
 import { sandboxAvailable } from './harness-sandbox.mjs';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -1263,6 +1263,7 @@ export class Bridge {
       // Qualified Antigravity models, as the signed-in account reports them, under their explicit harness routes ("new chats" only: an existing
       // chat keeps its runtime). They join the same library and slots as every other model. Never blocking: a cold catalog is loaded in the
       // background and offered from the next list on; until then a saved selection is retained as unavailable, never dropped or invented.
+      this.antigravityVerify(); // a sign-in Home finished is checked before this list is answered from an older catalog
       const agyIds = new Set(), agyLive = this.agyCatalogReady && this.antigravityRuntime() ? this.agyCatalogReady : null;
       if (agyLive) for (const m of agyLive.models) if (!list.some(x => x.id === m.id)) { list.push(antigravityRow(m, agyLive.levels)); agyIds.add(m.id); }
       if (!this.agyCatalogReady && !this.agyCatalogWarm && this.antigravityRuntime()) { this.agyCatalogWarm = true; this.antigravityCatalog().then(c => { this.agyCatalogReady = c.models.length ? c : null; this.agyCatalogWarm = false; }); }
@@ -1461,7 +1462,7 @@ export class Bridge {
     let result;
     try { result = await this.native.request(method, turn?.params ?? params); } catch (error) { turn?.failed(error); throw error; }
     turn?.accepted(result);
-    if (method === 'initialize') { this.nativeInitialization = clone(params); this.mirror?.start(); }
+    if (method === 'initialize') { this.nativeInitialization = clone(params); this.mirror?.start(); this.watchAntigravitySignIn(); }
     // A reopened or forked unmanaged GPT chat keeps any session tools native gave it.
     if (['thread/resume', 'thread/fork'].includes(method)) this.trackCaller(result, params.config ?? this.nativeCallers.get(params.threadId)?.options.config);
     if (method === 'mcpServerStatus/list') for (const server of result.data ?? []) this.log('capability.catalog', {
@@ -1887,7 +1888,9 @@ export class Bridge {
     if (!boundarySupported(harness('antigravity'), this.platform ?? process.platform)) return null; // not a qualified platform (macOS: candidate switch only)
     const chosen = process.env.BRIDGE_AGY ?? (this.connectionRoot ? readHarnessSettings(this.connectionRoot).antigravity : null)?.executable;
     const enabled = process.env.BRIDGE_AGY ? true : this.connectionRoot && readHarnessSettings(this.connectionRoot).antigravity?.enabled === true;
-    return enabled && chosen && findExecutable(chosen) ? { executable: findExecutable(chosen), home: process.env.HOME } : null;
+    // Bridge's own agy profile (the one Home signs in) whenever Home turned Gemini on; the default profile only for the BRIDGE_AGY development gate.
+    const profile = process.env.BRIDGE_AGY || !this.connectionRoot ? null : antigravityProfile(this.connectionRoot);
+    return enabled && chosen && findExecutable(chosen) ? { executable: findExecutable(chosen), home: process.env.HOME, profile } : null;
   }
   // A thinking level for an Antigravity chat, refused with the true cause: off or unqualified, the catalog not loaded, or not offered.
   async antigravityLevel(level) {
@@ -1907,15 +1910,29 @@ export class Bridge {
     if (!process.env.BRIDGE_AGY && settings?.enabled !== true) return 'Gemini (Antigravity) is turned off in Model Bridge Home, so nothing was sent. Turn it on there to use it; an existing Gemini chat keeps its history.';
     return 'Antigravity (agy) is no longer found on this system; nothing was sent. Reinstall it, or turn Gemini (Antigravity) on again in Home.';
   }
-  antigravityAgent(home) {
-    // The MCP-only main agent, under a per-install name so no workspace can shadow it, in agy's own config (never a workspace).
+  antigravityAgent({ home, profile = null }) {
+    // The MCP-only main agent, under a per-install name so no workspace can shadow it, in the profile agy runs on (never a workspace).
     const file = join(this.statePath, 'antigravity-agent.json');
     let name; try { name = JSON.parse(readFileSync(file, 'utf8')).name; } catch {}
     if (!/^bridge-mcp-[a-f0-9]{12}$/.test(name ?? '')) { name = 'bridge-mcp-' + randomUUID().replace(/-/g, '').slice(0, 12); writeFileSync(file, JSON.stringify({ name }), { mode: 0o600 }); }
-    const dir = join(home, '.gemini', 'config', 'agents'), path = join(dir, name + '.md'), body = agentDefinition(name);
+    const dir = join(profile ?? join(home, '.gemini'), 'config', 'agents'), path = join(dir, name + '.md'), body = agentDefinition(name);
     let current; try { current = readFileSync(path, 'utf8'); } catch {}
     if (current !== body) { mkdirSync(dir, { recursive: true, mode: 0o700 }); writeFileSync(path, body, { mode: 0o600 }); }
     return name;
+  }
+  // Home's sign-in asks Bridge to check it (a request file in the connection store): the catalog is probed again, sandboxed, on the same
+  // profile, and the answer is written back for Home. Watched while the desktop is connected, and checked on every model list too.
+  watchAntigravitySignIn() {
+    if (!this.connectionRoot || this.agyWatch) return;
+    try { this.agyWatch = watch(this.connectionRoot, (event, name) => { if (name === agySignInRequestFile) this.antigravityVerify(); }); this.agyWatch.on('error', () => {}); this.agyWatch.unref?.(); }
+    catch (error) { this.log('antigravity.watch_failed', errorMetadata(error)); }
+    this.antigravityVerify();
+  }
+  antigravityVerify() {
+    const asked = this.connectionRoot ? readAgyFile(this.connectionRoot, agySignInRequestFile) : null;
+    if (!asked || asked.nonce === this.agyVerifyNonce) return;
+    this.agyVerifyNonce = asked.nonce; this.agyCatalog = null; this.agyCatalogReady = null;
+    this.antigravityCatalog({ refresh: true });
   }
   antigravityCatalog({ refresh = false } = {}) {
     if (!refresh && this.agyCatalog) return this.agyCatalog;
@@ -1926,16 +1943,18 @@ export class Bridge {
       // local listener is granted to it only with the person's consent from Home's Turn on; without it nothing starts, not even the canary.
       const mac = (this.platform ?? process.platform) === 'darwin', consent = process.env.BRIDGE_AGY ? true : readHarnessSettings(this.connectionRoot ?? '').antigravity?.localListener === true;
       if (mac && !consent) return { models: [], levels: [], reason: 'local_listener_consent_required' };
-      if (!(await sandboxAvailable())) return { models: [], levels: [], reason: 'boundary_unavailable' };
+      if (!(await (this.sandboxAvailable ?? sandboxAvailable)())) return { models: [], levels: [], reason: 'boundary_unavailable' };
       const cwd = mkdtempSync(join(tmpdir(), 'bridge-agy-catalog-'));
       try {
-        const session = await openAntigravity({ ...runtime, cwd, agentName: this.antigravityAgent(runtime.home), mcpServe: stream => stream.destroy(), codexTools: new Set(), localBinding: mac, stateRoot: join(this.statePath, 'codex-sandbox') });
+        const session = await (this.antigravityOpen ?? openAntigravity)({ ...runtime, cwd, agentName: this.antigravityAgent(runtime), mcpServe: stream => stream.destroy(), codexTools: new Set(), localBinding: mac, stateRoot: join(this.statePath, 'codex-sandbox') });
         try { return { models: session.catalog.models.map(m => ({ id: harnessModelId('antigravity', 'google', m.id), model: m.id, name: m.name })), levels: session.catalog.levels }; }
         finally { await session.close(); }
       } catch (error) { this.log('antigravity.catalog_failed', errorMetadata(error)); return { models: [], levels: [], reason: signedOut(error.message) ? 'signed_out' : 'catalog_failed' }; }
       finally { rmSync(cwd, { recursive: true, force: true }); }
     })();
     this.agyCatalog = pending; pending.then(c => { if (c.models.length) this.agyCatalogReady = c; });
+    // Bridge's verification of the sign-in Home ran on this profile: what the sandboxed probe found, answering Home's latest request.
+    pending.then(c => { if (this.antigravityRuntime()?.profile) try { writeAgyFile(this.connectionRoot, agyVerifiedFile, { nonce: this.agyVerifyNonce ?? null, ok: c.models.length > 0, models: c.models.length, reason: c.models.length ? null : String(c.reason ?? 'catalog_failed').slice(0, 40), at: Date.now() }); } catch (error) { this.log('antigravity.verify_write_failed', errorMetadata(error)); } });
     pending.then(c => { if (!c.models.length && this.agyCatalog === pending) setTimeout(() => { if (this.agyCatalog === pending) this.agyCatalog = null; }, 60_000).unref?.(); });
     return pending;
   }
@@ -2023,7 +2042,7 @@ export class Bridge {
       const onAbort = () => { session?.cancel(); stopTimer ??= setTimeout(() => { session?.close().catch(() => {}); }, 5000); stopTimer.unref?.(); };
       controller.signal.addEventListener('abort', onAbort, { once: true });
       running.query = { close: () => session?.cancel(), exited: async () => ({ state: 'none' }) };
-      const opener = this.antigravityOpen ?? openAntigravity, options = { ...runtime, cwd: record.thread.cwd, agentName: this.antigravityAgent(runtime.home), mcpServe,
+      const opener = this.antigravityOpen ?? openAntigravity, options = { ...runtime, cwd: record.thread.cwd, agentName: this.antigravityAgent(runtime), mcpServe,
         codexTools: new Set(['find_tools', 'call_tool', 'find_skills', 'read_skill', 'shell', 'read_history']), localBinding: running.localBinding,
         stateRoot: join(this.statePath, 'codex-sandbox'), signal: controller.signal,
         onEvent: event => {
@@ -2242,7 +2261,7 @@ async function main() {
   const stop = () => {
     if (stopping) return; stopping = true;
     log('process.stopping', { activeTurns: bridge?.active.size ?? 0 });
-    bridge?.mirror?.stop();
+    bridge?.mirror?.stop(); bridge?.agyWatch?.close();
     for (const r of bridge?.active.values() ?? []) { r.controller?.abort(); r.query?.close(); }
     providerPool?.stop(); child.kill(); desktop.end(); process.stdin.destroy();
   };

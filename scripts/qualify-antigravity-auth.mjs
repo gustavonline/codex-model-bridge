@@ -1,5 +1,6 @@
 // Explicit opt-in: where agy's Google sign-in can live so that Bridge's SANDBOXED sessions can use it (docs/harnesses.md, "Signing in with
-// Google"). No prompt is ever sent and no model is called. Steps, in the order the architecture review set:
+// Google"). No prompt is ever sent and no model is called. Since T3 Code #39485 every launch carries the remote marker (antigravityLaunch), so
+// `login` + `a4` reproduce the product route; `a` (ACP authenticate's loopback route) is kept for diagnosis only. Steps, in the order the architecture review set:
 //   a     A1 + A2: inside the boundary (macOS: Codex's sandbox with local binding), on a Bridge-owned agy profile (--gemini-dir), agy's own
 //         sign-in starts; the authorization URL it opens is captured by a recorder (nothing is opened) and checked; the host then probes
 //         agy's localhost callback with a plain GET (any HTTP status passes). Without --wait the sign-in is cancelled there.

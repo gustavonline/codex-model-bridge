@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, lstatSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { ProviderRegistry, rootOk, readPrivate, localModelId, freeOnly, modelReasoning } from './providers.mjs';
-import { boundarySupported, findExecutable, harness, harnessStatuses, readHarnessSettings, setHarnessEnabled } from './harnesses.mjs';
+import { agySignInRequestFile, agyVerifiedFile, antigravityProfile, boundarySupported, findExecutable, harness, harnessStatuses, readAgyFile, readHarnessSettings, setHarnessEnabled, writeAgyFile } from './harnesses.mjs';
 import { AntigravitySignIn } from './antigravity-auth.mjs';
 const identity = p => { const s = lstatSync(p); return [s.dev, s.ino, s.uid, s.mode & 0o777].join(':'); };
 const fail = code => { throw Object.assign(new Error(code), { code }); };
@@ -24,7 +24,7 @@ export function prepareProviderHome(root, { credentialBindings = null } = {}) {
   const path = join(root, 'provider-home-binding.json'); writeFileSync(path, JSON.stringify(value) + '\n', { flag: 'wx', mode: 0o600 });
   return { bindingPath: path, state: join(root, 'state'), scope };
 }
-export function providerControls(path, { request, secrets, authOptions = {}, agyAuthOptions = {}, find = findExecutable, home = process.env.HOME } = {}) {
+export function providerControls(path, { request, secrets, authOptions = {}, agyAuthOptions = {} } = {}) {
   if (!isAbsolute(path) || basename(path) !== 'provider-home-binding.json') fail('binding_invalid');
   const root = dirname(path); rootOk(root); const m = readPrivate(path, 8192), original = JSON.stringify(m);
   const fields = ['version', 'kind', 'bindingId', 'profileId', 'bridgeId', 'root', 'profile', 'state', 'credentialBindings'];
@@ -44,13 +44,21 @@ export function providerControls(path, { request, secrets, authOptions = {}, agy
     } });
   // Antigravity as a connected provider once it is turned on (or its models are in the library): its account's models, available only while
   // it is on and its catalog is current. Turning it off keeps the saved selection, shown as unavailable.
-  // Gemini sign-in from Home (agy's own browser sign-in; antigravity-auth.mjs), offered where its boundary is supported and agy is found.
-  const agyAuth = new AntigravitySignIn(agyAuthOptions);
+  // Gemini sign-in from Home (agy's own `acp --login` on Bridge's profile; antigravity-auth.mjs), offered once Gemini is turned on here. When agy
+  // accepts a code, a request is written for Bridge, whose sandboxed catalog probe on the same profile decides whether the sign-in is usable.
+  const agyAuth = new AntigravitySignIn({ ...agyAuthOptions, onSignedIn: () => writeAgyFile(state, agySignInRequestFile, { nonce: randomBytes(16).toString('hex'), at: Date.now() }) });
   const agyExecutable = () => {
     if (!boundarySupported(harness('antigravity'))) return null;
-    const saved = readHarnessSettings(state).antigravity; return saved?.enabled ? saved.executable : find('agy');
+    const saved = readHarnessSettings(state).antigravity; return saved?.enabled ? saved.executable : null;
   };
-  const agySignIn = () => ({ ...agyAuth.status(home), available: !!agyExecutable() });
+  const agySignIn = () => {
+    const own = agyAuth.status(), asked = readAgyFile(state, agySignInRequestFile), checked = readAgyFile(state, agyVerifiedFile);
+    const answered = !!asked && checked?.nonce === asked.nonce, verified = checked?.ok === true;
+    // While agy has accepted the code, the sign-in is "verifying" until Bridge's sandboxed probe answers THIS request.
+    const phase = own.phase === 'verifying' && answered ? (verified ? 'complete' : 'failed') : own.phase;
+    const error = own.phase === 'verifying' && answered && !verified ? (checked.reason === 'signed_out' ? 'auth_not_usable' : 'auth_verify_failed') : own.error;
+    return { phase, authorizationUrl: own.authorizationUrl, error, available: !!agyExecutable(), verified, models: verified ? checked.models : null };
+  };
   const agyProvider = () => {
     // A choice saved where the boundary is not offered (a macOS candidate without its switch) is not "on".
     const on = readHarnessSettings(state).antigravity?.enabled === true && boundarySupported(harness('antigravity')), models = registry.pickerCatalog().models.filter(m => m.kind === 'antigravity');
@@ -80,7 +88,8 @@ export function providerControls(path, { request, secrets, authOptions = {}, agy
       ['status', {}, 'Read this declared provider registry.'],
       ['auth_begin', { revision: properties.revision }, 'Begin human OpenRouter browser PKCE sign-in; no code/verifier/key is returned.', true],
       ['auth_cancel', { revision: properties.revision }, 'Cancel this pending browser authorization; never delete existing credentials.'],
-      ['harness_sign_in', { revision: properties.revision, harness: { type: 'string', enum: ['antigravity'] } }, 'Begin the harness\'s own browser sign-in (Gemini: agy with Google, returning to agy\'s own local callback); no code, token or password is returned or stored by Bridge.', true],
+      ['harness_sign_in', { revision: properties.revision, harness: { type: 'string', enum: ['antigravity'] } }, 'Begin the harness\'s own sign-in (Gemini: agy acp --login on Bridge\'s own profile). Returns the Google link to open; no token or password is returned or stored by Bridge.', true],
+      ['harness_sign_in_code', { revision: properties.revision, harness: { type: 'string', enum: ['antigravity'] }, code: str(8192) }, 'Send the one-time code the Antigravity page shows (or that page\'s URL) to the pending sign-in. It goes to agy once and is not kept.'],
       ['harness_sign_in_cancel', { revision: properties.revision, harness: { type: 'string', enum: ['antigravity'] } }, 'Cancel a pending harness sign-in; an existing sign-in is kept.'],
       ['connect', { revision: properties.revision, name: str(80), baseUrl: str(2048), authRef: { anyOf: [{ type: 'null' }, str(64)] } }, 'Save an explicit Responses provider; no model call or credential import.'],
       ['refresh', properties, 'Request this provider catalog; credentials, if selected, stay in its URL-bound native broker.', true],
@@ -93,7 +102,7 @@ export function providerControls(path, { request, secrets, authOptions = {}, agy
     ],
     snapshot, close: () => { agyAuth.cancel(); return auth.close(); },
     async call(action, args) {
-      const extra = { status: [], harness: ['revision', 'harness', 'enabled'], harness_sign_in: ['revision', 'harness'], harness_sign_in_cancel: ['revision', 'harness'], auth_begin: ['revision'], auth_cancel: ['revision'], connect: ['revision', 'name', 'baseUrl', 'authRef'], refresh: ['revision', 'providerId'], select: ['revision', 'providerId', 'model'], enabled: ['revision', 'providerId', 'enabled'], slots: ['revision', 'slotsRevision', 'models'] }[action];
+      const extra = { status: [], harness: ['revision', 'harness', 'enabled'], harness_sign_in: ['revision', 'harness'], harness_sign_in_code: ['revision', 'harness', 'code'], harness_sign_in_cancel: ['revision', 'harness'], auth_begin: ['revision'], auth_cancel: ['revision'], connect: ['revision', 'name', 'baseUrl', 'authRef'], refresh: ['revision', 'providerId'], select: ['revision', 'providerId', 'model'], enabled: ['revision', 'providerId', 'enabled'], slots: ['revision', 'slotsRevision', 'models'] }[action];
       const unified = action === 'slots' && Object.hasOwn(args, 'catalogRevision');
       if (unified) extra.push('catalogRevision', ...(Object.hasOwn(args, 'reset') ? ['reset'] : []));
       if (!extra || !exact(args, [...Object.keys(scope), ...extra])) fail('invalid_request');
@@ -111,8 +120,9 @@ export function providerControls(path, { request, secrets, authOptions = {}, agy
       if (action === 'harness_sign_in') {
         if (args.harness !== 'antigravity' || !boundarySupported(harness('antigravity'))) fail('harness_not_qualified');
         const executable = agyExecutable(); if (!executable) fail('harness_runtime_not_found');
-        await agyAuth.begin(executable, home); guard(); return snapshot();
+        await agyAuth.begin(executable, antigravityProfile(state)); guard(); return snapshot();
       }
+      if (action === 'harness_sign_in_code') { if (args.harness !== 'antigravity') fail('invalid_request'); agyAuth.submit(args.code); return snapshot(); }
       if (action === 'harness_sign_in_cancel') { if (args.harness !== 'antigravity') fail('invalid_request'); agyAuth.cancel(); return snapshot(); }
       if (action === 'connect') focus = registry.create({ name: args.name, baseUrl: args.baseUrl, authRef: args.authRef });
       else if (action === 'refresh') {

@@ -115,18 +115,39 @@ export function harnessRefusal(route) {
 }
 
 // Prepared launch for Antigravity's official ACP server (`agy acp`, flags verified on 1.5.13), used by antigravity.mjs inside the process
-// boundary (docs/antigravity-qualification.md). The Google-account route (oauth-personal) runs with auto-update off and file credential storage, and every
-// it inherits only an explicit allowlist of the environment, so a parent shell can never switch it to API-key or Agent Platform billing.
-// It does NOT isolate the profile: on 1.5.13 the login and state live under $HOME/.gemini whatever GEMINI_HOME says (an own profile would need
-// --gemini-dir and its own sign-in). Only the server log is moved, into `logDir`. `--sandbox` is not passed: it can silently do nothing.
-// An explicit allowlist of what agy inherits (nothing else of Bridge's environment, so no provider key, token or override reaches it).
-const passed = ['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL', 'TZ'];
-// `interactive` is only Home's sign-in: there agy may open a browser. Every other launch (a chat's session, the catalog probe, a sign-in check)
-// carries the remote marker, so a signed-out agy refuses at once ("No browser is available here") and never opens a browser or waits.
+// Prepared launch for Antigravity's official ACP server (`agy acp`, flags verified on 1.5.13), used by antigravity.mjs inside the process
+// boundary and by Home's sign-in (docs/antigravity-qualification.md). The Google-account route (oauth-personal) runs with auto-update off,
+// and inherits only an explicit allowlist of the environment, so a parent shell can never switch it to API-key or Agent Platform billing.
+// Every launch carries the remote marker (SSH_CONNECTION). agy 1.5 keeps a Google sign-in in ONE shared OS keyring entry for every profile
+// unless it believes it runs over SSH; with the marker it keeps it in the profile's own file storage, and a signed-out agy refuses at once
+// ("No browser is available here") instead of opening a browser. The sign-in is then `agy acp --login` (`login`), which works in that mode.
+// (The same approach as T3 Code: pingdotgg/t3code#39485, docs/upstream-reference.md.) `--sandbox` is not passed: it can silently do nothing.
 // `profile` (absolute) is agy's own --gemini-dir: its state, config and login live there instead of $HOME/.gemini (measured on 1.5.13).
-export function antigravityLaunch({ executable, logDir, env = process.env, interactive = false, profile = null }) {
+const passed = ['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL', 'TZ'];
+export function antigravityLaunch({ executable, logDir, env = process.env, profile = null, login = false }) {
   if (!isAbsolute(executable ?? '') || !isAbsolute(logDir ?? '') || (profile !== null && !isAbsolute(profile))) throw Object.assign(new Error('Antigravity needs an absolute executable and log directory'), { code: 'route_invalid' });
   const kept = Object.fromEntries(passed.filter(k => typeof env[k] === 'string').map(k => [k, env[k]]));
-  return { command: executable, args: ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(logDir, 'acp-server.log'), ...(profile ? ['--gemini-dir', profile] : [])], authMethod: 'oauth-personal',
-    env: { ...kept, AGY_CLI_DISABLE_AUTO_UPDATE: '1', ...(interactive ? {} : { SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0' }) } };
+  const common = ['--disable-telemetry', '--log-file', join(logDir, 'acp-server.log'), ...(profile ? ['--gemini-dir', profile] : [])];
+  return { command: executable, args: login ? ['acp', '--login', ...common] : ['acp', '--process-per-session', '--include-default-customizations=false', ...common], authMethod: 'oauth-personal',
+    env: { ...kept, AGY_CLI_DISABLE_AUTO_UPDATE: '1', SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0' } };
+}
+// Bridge's own agy profile, in the connection store both Home and Bridge use: the one place its Google sign-in, config and agent live, for
+// sign-in, catalog probe and sessions alike. Never the owner's ~/.gemini, so the owner's agy and its Keychain login are untouched.
+export const antigravityProfile = root => join(root, 'antigravity-profile');
+// Home and Bridge share the sign-in's outcome through two small files in that store (no secret in either):
+//  - the request Home writes once agy accepted a sign-in: { version, nonce, at };
+//  - Bridge's verification from its own SANDBOXED catalog probe on that profile: { version, nonce, ok, models, reason, at }.
+// Home reports a sign-in ready only from a verification that answers its request.
+export const agySignInRequestFile = 'antigravity-signin.json', agyVerifiedFile = 'antigravity-verified.json';
+export function readAgyFile(root, name) {
+  try {
+    const v = JSON.parse(readFileSync(join(root, name), 'utf8'));
+    if (v?.version !== 1 || !(v.nonce === null && name === agyVerifiedFile || /^[a-f0-9]{32}$/.test(v.nonce ?? '')) || !Number.isFinite(v.at)) return null;
+    if (name === agyVerifiedFile && (typeof v.ok !== 'boolean' || !Number.isSafeInteger(v.models) || !(v.reason === null || /^[a-z_]{1,40}$/.test(v.reason ?? '')))) return null;
+    return v;
+  } catch { return null; }
+}
+export function writeAgyFile(root, name, value) {
+  const path = join(root, name), temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, JSON.stringify({ version: 1, ...value }), { mode: 0o600 }); renameSync(temp, path);
 }

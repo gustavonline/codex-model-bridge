@@ -309,3 +309,28 @@ test('an account whose models have no thinking levels takes the "none" Bridge ad
     await assert.rejects(f.bridge.request('thread/settings/update', { threadId: id, effort: 'high' }), /offers no thinking levels/);
   } finally { f.close(); }
 });
+
+test('Home\'s sign-in request makes Bridge probe the catalog again, sandboxed, on the same Bridge profile, and write the answer back; the agent lives in that profile', async () => {
+  const { mkdtempSync, readFileSync, existsSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path');
+  const { antigravityProfile, agySignInRequestFile, agyVerifiedFile, readAgyFile, writeAgyFile } = await import('../plugins/codex-claude/home/harnesses.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'bridge-agy-verify-')), profile = antigravityProfile(root), f = fixture('openai', { connectionRoot: root }), opened = [];
+  f.bridge.platform = 'linux'; f.bridge.sandboxAvailable = async () => true;
+  f.bridge.antigravityRuntime = () => ({ executable: '/opt/agy', home: '/nonexistent-home', profile });
+  let signedOut = false;
+  f.bridge.antigravityOpen = async opts => { opened.push({ profile: opts.profile, agent: opts.agentName }); if (signedOut) throw new Error('authenticate: No browser is available here (this is a remote (SSH) session)'); return { catalog: { models: [{ id: 'gemini-x', name: 'Gemini X' }], levels: ['low'] }, close: async () => ({ state: 'exited' }) }; };
+  const until = async (check, what) => { for (let i = 0; i < 400; i++) { if (check()) return; await new Promise(r => setTimeout(r, 10)); } assert.fail(`timed out waiting for ${what}`); };
+  try {
+    const nonce = 'a'.repeat(32); writeAgyFile(root, agySignInRequestFile, { nonce, at: Date.now() });
+    f.bridge.watchAntigravitySignIn();
+    await until(() => readAgyFile(root, agyVerifiedFile)?.nonce === nonce, 'the verification');
+    assert.deepEqual(readAgyFile(root, agyVerifiedFile), { ...readAgyFile(root, agyVerifiedFile), version: 1, nonce, ok: true, models: 1, reason: null });
+    assert.equal(opened[0].profile, profile, 'probed on Bridge\'s profile, not ~/.gemini');
+    assert.ok(existsSync(join(profile, 'config', 'agents', opened[0].agent + '.md')), 'the MCP-only agent is defined in that profile');
+    assert.ok((await f.bridge.request('model/list', {})).data.some(m => m.id === MODEL), 'and its models are offered');
+    // A new request (signed out in the sandbox this time) is answered with that reason, through the watcher.
+    signedOut = true; const second = 'b'.repeat(32); writeAgyFile(root, agySignInRequestFile, { nonce: second, at: Date.now() });
+    await until(() => readAgyFile(root, agyVerifiedFile)?.nonce === second, 'the second verification');
+    assert.deepEqual([readAgyFile(root, agyVerifiedFile).ok, readAgyFile(root, agyVerifiedFile).reason], [false, 'signed_out']);
+    void readFileSync;
+  } finally { f.bridge.agyWatch?.close(); f.close(); }
+});
