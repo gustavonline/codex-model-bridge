@@ -25,6 +25,7 @@ import { mailPointer, sessionCall, sessionNamespace, withSessionTools } from './
 import { messageStream, submission, steerTurn, steeringResult, settleSteering } from './steering.mjs';
 import { claudeDecision, claudeDenial, mergeClaudeModels, normalizeModels, recordCatalog, recordOffered, storedModels } from './connections.mjs';
 import { ResponsesRouter } from './plugins/codex-claude/home/providers.mjs';
+import { signedOut } from './plugins/codex-claude/home/antigravity-auth.mjs';
 import { boundarySupported, findExecutable, harness, harnessModelId, harnessRefusal, isHarnessModel, parseHarnessModelId, readHarnessSettings } from './plugins/codex-claude/home/harnesses.mjs';
 import { agentDefinition, open as openAntigravity } from './antigravity.mjs';
 import { sandboxAvailable } from './harness-sandbox.mjs';
@@ -1201,6 +1202,7 @@ export class Bridge {
         if (route?.harness !== 'antigravity') throw new RpcError(harnessRefusal(route ?? { harness: null }).message, -32602);
         if (ready) throw new RpcError('An Antigravity chat keeps its model; start a new chat to use another one. Nothing was changed.', -32602);
         throw new RpcError(!runtime ? this.antigravityUnavailable() : catalog.models.length ? 'This Gemini model is not in your Antigravity account\'s current catalog; nothing was started.'
+          : catalog.reason === 'signed_out' ? antigravitySignInNeeded
           : `Gemini (Antigravity) could not list your account's models (${String(catalog.reason ?? 'unknown').slice(0, 60)}); nothing was started.`, -32602);
         }
       }
@@ -1928,7 +1930,7 @@ export class Bridge {
         const session = await openAntigravity({ ...runtime, cwd, agentName: this.antigravityAgent(runtime.home), mcpServe: stream => stream.destroy(), codexTools: new Set(), localBinding: mac, stateRoot: join(this.statePath, 'codex-sandbox') });
         try { return { models: session.catalog.models.map(m => ({ id: harnessModelId('antigravity', 'google', m.id), model: m.id, name: m.name })), levels: session.catalog.levels }; }
         finally { await session.close(); }
-      } catch (error) { this.log('antigravity.catalog_failed', errorMetadata(error)); return { models: [], levels: [], reason: 'catalog_failed' }; }
+      } catch (error) { this.log('antigravity.catalog_failed', errorMetadata(error)); return { models: [], levels: [], reason: signedOut(error.message) ? 'signed_out' : 'catalog_failed' }; }
       finally { rmSync(cwd, { recursive: true, force: true }); }
     })();
     this.agyCatalog = pending; pending.then(c => { if (c.models.length) this.agyCatalogReady = c; });
@@ -2056,7 +2058,8 @@ export class Bridge {
     } catch (error) {
       this.log('turn.error', { threadId, turnId: turn.id, stage: 'antigravity', ...errorMetadata(error) });
       turn.status = controller.signal.aborted ? 'interrupted' : 'failed';
-      if (turn.status === 'failed') turn.error = { message: error.message, codexErrorInfo: /quota|limit|exhausted|429/i.test(error.message) ? 'usageLimitExceeded' : 'other' };
+      if (turn.status === 'failed') turn.error = signedOut(error.message) ? { message: antigravitySignInNeeded, codexErrorInfo: 'unauthorized' }
+        : { message: error.message, codexErrorInfo: /quota|limit|exhausted|429/i.test(error.message) ? 'usageLimitExceeded' : 'other' };
     } finally {
       try { await session?.close(); } catch (error) { this.log('turn.cleanup_failed', { threadId, turnId: turn.id, ...errorMetadata(error) }); }
       for (const value of openItems.values()) {
@@ -2074,6 +2077,7 @@ export class Bridge {
   }
 }
 
+const antigravitySignInNeeded = 'Gemini (Antigravity) is not signed in for Model Bridge. Open Model Bridge Home, choose Sign in with Google under Gemini, then send again. Nothing was sent.';
 // Whether a Bridge chat belongs in a thread/list view, decided by native's own filters on what Bridge holds for it. A chat without a turn is not
 // listed (native hides empty threads too); a filter Bridge cannot decide for its chats (ancestry, attachment) leaves them out.
 const INTERACTIVE = new Set(['cli', 'vscode', 'appServer']);

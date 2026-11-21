@@ -19,6 +19,7 @@
     "custom-turns.mjs",
     "plugins/codex-claude/home/providers.mjs",
     "plugins/codex-claude/home/harnesses.mjs",
+    "plugins/codex-claude/home/antigravity-auth.mjs",
     "plugins/codex-claude/home/credential-helper.mjs",
     "plugins/codex-claude/home/native-secrets.mjs",
     "plugins/codex-claude/home/connection-policy.mjs",

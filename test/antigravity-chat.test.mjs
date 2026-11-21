@@ -290,6 +290,18 @@ test('a malformed application context is refused before the turn exists or agy s
   } finally { f.close(); }
 });
 
+test('a signed-out agy is reported as "sign in from Home": a turn fails as unauthorized at once, and a new chat is refused with the same step', async () => {
+  const f = fixture(); agy(f); try {
+    const id = await start(f);
+    f.bridge.antigravityOpen = async () => { throw Object.assign(new Error('authenticate: No browser is available here (this is a remote (SSH) session, so the browser\'s sign-in redirect can\'t reach this machine).'), { code: 'harness_error' }); };
+    const t = (await f.send(id, 'hello')).turn; await f.done(t.id);
+    const turn = f.bridge.records.get(id).turns.at(-1);
+    assert.deepEqual([turn.status, turn.error.codexErrorInfo], ['failed', 'unauthorized']); assert.match(turn.error.message, /choose Sign in with Google under Gemini/);
+    f.bridge.antigravityCatalog = async () => ({ models: [], levels: [], reason: 'signed_out' });
+    await assert.rejects(f.bridge.request('thread/start', { model: MODEL, cwd: f.statePath }), /not signed in for Model Bridge.*Sign in with Google/);
+  } finally { f.close(); }
+});
+
 test('an account whose models have no thinking levels takes the "none" Bridge advertises for them', async () => {
   const f = fixture(); agy(f); f.bridge.antigravityCatalog = async () => ({ models: [{ id: MODEL, model: 'gemini-x', name: 'Gemini X' }], levels: [] }); try {
     const id = await start(f);

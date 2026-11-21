@@ -189,6 +189,9 @@ function parseProviders(value) {
       || ['found', 'not_found', 'not_applicable'].indexOf(h.runtime) < 0 || ['not_qualified', 'qualified_here'].indexOf(h.execution) < 0 || (h.execution === 'qualified_here' && (h.id !== 'antigravity' || typeof h.enabled !== 'boolean' || typeof h.canEnable !== 'boolean')) || h.signIn !== 'unknown' || h.catalog !== 'unknown' || !(h.minimumVersion === undefined || /^[0-9]{1,4}([.][0-9]{1,4}){0,3}$/.test(h.minimumVersion)) || !(h.executable === undefined || /^[A-Za-z0-9_.-]{1,40}$/.test(h.executable));
   }))) return null;
   if (value.slots.scope !== undefined && (['all', 'custom'].indexOf(value.slots.scope) < 0 || !Number.isSafeInteger(value.slots.catalogRevision) || value.slots.catalogRevision < 0)) return null;
+  if (value.agyAuth !== undefined && (!isObject(value.agyAuth) || ['idle', 'starting', 'waiting', 'complete', 'failed', 'expired', 'cancelled'].indexOf(value.agyAuth.phase) < 0
+    || typeof value.agyAuth.saved !== 'boolean' || typeof value.agyAuth.available !== 'boolean' || !(value.agyAuth.error === null || (typeof value.agyAuth.error === 'string' && /^[a-z_]{1,40}$/.test(value.agyAuth.error)))
+    || !(value.agyAuth.authorizationUrl === null || validAgySignInUrl(value.agyAuth.authorizationUrl)))) return null;
   if (value.auth !== undefined && (!isObject(value.auth) || ['idle', 'starting', 'waiting', 'exchanging', 'complete', 'failed', 'expired', 'cancelled'].indexOf(value.auth.phase) < 0 || typeof value.auth.storageAvailable !== 'boolean' || !(value.auth.authorizationUrl === null || validAuthUrl(value.auth.authorizationUrl)))) return null;
   return value;
 }
@@ -211,9 +214,19 @@ function validAuthUrl(value) {
       && Array.from(url.searchParams.keys()).length === 4 && new Set(url.searchParams.keys()).size === 4;
   } catch (ignored) { return false; }
 }
+// Gemini sign-in: only Google's PKCE authorization that returns to agy's own local callback; never a page that would ask for a pasted code.
+function validAgySignInUrl(value) {
+  try {
+    if (typeof value !== 'string' || value.length > 4096) return false;
+    var url = new URL(value), back = new URL(url.searchParams.get('redirect_uri'));
+    return url.protocol === 'https:' && url.hostname === 'accounts.google.com' && ['/o/oauth2/auth', '/o/oauth2/v2/auth'].indexOf(url.pathname) >= 0 && !url.hash && !url.username && !url.password
+      && url.searchParams.get('response_type') === 'code' && url.searchParams.get('code_challenge_method') === 'S256' && !!url.searchParams.get('client_id')
+      && back.protocol === 'http:' && ['localhost', '127.0.0.1'].indexOf(back.hostname) >= 0 && /^[0-9]{2,5}$/.test(back.port) && back.pathname === '/auth/callback' && !back.search && !back.hash;
+  } catch (ignored) { return false; }
+}
 function clearLink() { clearTimeout(linkTimer); linkTimer = null; linkRequest = null; }
 function openAuth(url) {
-  if (!linksAvailable || !validAuthUrl(url) || linkRequest || view.handshake !== 'connected') return;
+  if (!linksAvailable || !(validAuthUrl(url) || validAgySignInUrl(url)) || linkRequest || view.handshake !== 'connected') return;
   linkRequest = nextId++;
   send({ jsonrpc: '2.0', id: linkRequest, method: 'ui/open-link', params: { url: url } });
   linkTimer = setTimeout(function () { clearLink(); controlNotice = 'Browser opening outcome unknown. Open it explicitly again, or cancel sign-in.'; render(); }, TIMEOUT_MS);
@@ -222,6 +235,10 @@ function openAuth(url) {
 function readableError(code) {
   var providerErrors = { endpoint_invalid: 'Use an HTTPS endpoint, or a loopback HTTP endpoint with an explicit port.', provider_invalid: 'Enter a connection name and a valid endpoint.', provider_exists: 'This connection is already saved. Select it in settings.', credential_endpoint_mismatch: 'Choose an authentication reference for this exact endpoint.', secret_storage_unavailable: 'Secret storage is unavailable. Check the startup helper.', catalog_failed: 'The catalog request failed. Check the endpoint, then refresh.', free_model_required: 'Choose a catalog-advertised free model.', auth_expired: 'Sign-in expired. Try again.', auth_cancelled: 'Sign-in cancelled.' };
   if (providerErrors[code]) return providerErrors[code];
+  var geminiErrors = { auth_failed: 'Google sign-in did not finish. Try again.', auth_in_progress: 'A Gemini sign-in is already in progress.',
+    auth_unsupported_flow: 'agy offered a sign-in that would need a pasted code, which Model Bridge does not use. Update agy and try again.',
+    harness_runtime_not_found: 'agy is not installed on this Mac.', harness_not_qualified: 'Gemini (Antigravity) does not run on this system yet.' };
+  if (geminiErrors[code]) return geminiErrors[code];
   return ({ catalog_auth_required: 'The provider refused catalog access. Check its saved sign-in.', catalog_rate_limited: 'The provider rate-limited this catalog request.', catalog_unreachable: 'The endpoint could not be reached.', catalog_protocol_unsupported: 'The endpoint did not return a supported model catalog.', auth_denied: 'Browser authorization was refused.', auth_rate_limited: 'Authorization was rate-limited.', auth_unreachable: 'The authorization service could not be reached.', auth_timeout: 'Authorization timed out.', stale_revision: 'Connection state changed; read current state before trying again.', harness_not_qualified: 'This runtime cannot run on this system yet.', harness_runtime_not_found: 'This runtime is not installed. Install it, then try again.' })[code] || 'The action could not be completed. Read current state before trying again.';
 }
 function sameScope(a, b) { return a && b && a.bindingId === b.bindingId && a.profileId === b.profileId && a.bridgeId === b.bridgeId; }
@@ -245,7 +262,7 @@ function readState() {
 function scheduleStateRead() {
   var c = view.home && view.home.controls || recoveryScope;
   if (!c || c.kind !== 'responses-trial' || !toolsAvailable || view.handshake !== 'connected' || pendingControl || stateRequest || stateTimer !== null || stateReadFailed) return;
-  var signingIn = c.auth && ['starting', 'waiting', 'exchanging'].indexOf(c.auth.phase) >= 0;
+  var signingIn = c.auth && ['starting', 'waiting', 'exchanging'].indexOf(c.auth.phase) >= 0 || c.agyAuth && ['starting', 'waiting'].indexOf(c.agyAuth.phase) >= 0;
   var delay = document.hidden === true ? 10000 : firstStateRead || uncertain ? 0 : signingIn ? 1000 : 10000; firstStateRead = false;
   stateTimer = setTimeout(function () { stateTimer = null; if (document.hidden !== true) readState(); else scheduleStateRead(); }, delay);
 }
@@ -341,6 +358,22 @@ function renderProviders(target, c, blocked) {
     if (aria) b.setAttribute('aria-label', aria);
     b.addEventListener('click', action); parent.append(b); return b;
   }
+  // Gemini sign-in through agy's own browser flow: start, open the browser (host link opening), cancel. Bridge never sees the code or token.
+  function geminiSignIn(target, c) {
+    var a = c.agyAuth; if (!a || !a.available) return;
+    var box = node('div', undefined, 'detail-row gemini-sign-in'), text = node('div'), busy = ['starting', 'waiting'].indexOf(a.phase) >= 0;
+    var line = a.phase === 'starting' ? 'Starting sign-in with Google…' : a.phase === 'waiting' ? 'Finish signing in with Google in your browser. This page updates when it is done.'
+      : a.phase === 'complete' ? 'Sign-in complete. Gemini models appear in the model picker within about a minute.' : a.phase === 'expired' ? 'Sign-in timed out. Try again.'
+      : a.phase === 'cancelled' ? 'Sign-in cancelled.' : a.phase === 'failed' ? readableError(a.error || 'auth_failed')
+      : a.saved ? 'Google sign-in saved for Model Bridge.' : 'No Google sign-in saved for Model Bridge yet.';
+    text.append(node('h3', 'Google sign-in'), node('small', line, 'muted')); box.append(text);
+    if (busy) {
+      if (a.phase === 'waiting' && a.authorizationUrl) button(box, 'Open browser', function () { openAuth(a.authorizationUrl); }, 'gemini-open-auth', !linksAvailable || !!linkRequest, true);
+      button(box, 'Cancel sign-in', function () { controlCall('harness_sign_in_cancel', { harness: 'antigravity' }); }, 'gemini-cancel-auth');
+    } else button(box, a.saved ? 'Sign in again' : 'Sign in with Google', function () { controlCall('harness_sign_in', { harness: 'antigravity' }); }, 'gemini-sign-in', !linksAvailable, !a.saved);
+    if (!linksAvailable) box.append(node('p', 'This host does not offer browser opening, so sign-in is not available in this view.', 'alert'));
+    target.append(box);
+  }
   function field(parent, label, key, limit) {
     var row = node('label', label), input = keyed(node('input'), key); input.type = 'text'; input.value = providerDraft[key]; input.disabled = blocked;
     input.id = key; input.maxLength = limit; input.autocomplete = 'off'; row.setAttribute('for', key);
@@ -421,6 +454,7 @@ function renderProviders(target, c, blocked) {
     info.append(node('h3', h.label), node('small', line, 'muted'), why); row.append(info);
     // The one action where its boundary is supported and its runtime is found: on or off for new chats. Sign-in stays the runtime's own.
     if (h.execution === 'qualified_here' && h.canEnable) button(row, h.enabled ? 'Turn off' : 'Turn on', function () { controlCall('harness', { harness: h.id, enabled: !h.enabled }); }, 'harness-' + h.id, false, false, (h.enabled ? 'Turn off ' : 'Turn on ') + h.label);
+    if (h.id === 'antigravity' && h.execution === 'qualified_here' && h.canEnable) geminiSignIn(row, c);
     more.append(row);
   });
   if (providerDraft.open) {
@@ -490,7 +524,7 @@ function renderProviders(target, c, blocked) {
     // The boundary line stays until the new hand-off is qualified; Technical details come last.
     if (p.protocol === 'responses') providerOptions.append(node('p', 'Chats started with ' + p.name + ' can switch between ' + p.name + ' models. To use another connection, start a new chat.', 'muted boundary'));
     if (p.protocol === 'claude') providerOptions.append(node('p', 'A chat switched to Claude keeps its messages and tool results, but not earlier hidden reasoning.', 'muted boundary'));
-    if (p.protocol === 'antigravity') providerOptions.append(node('p', 'Sign-in stays with agy: run it once and sign in with Google. Its models are for new chats; a chat keeps its model.', 'muted boundary'));
+    if (p.protocol === 'antigravity') { geminiSignIn(providerOptions, c); providerOptions.append(node('p', 'Gemini models are for new chats; a chat keeps its model.', 'muted boundary')); }
     providerOptions.append(technical);
     connections.append(providerOptions);
   }
@@ -806,19 +840,19 @@ function onResponse(message) {
   if (pendingControl && message.id === pendingControl.id) {
     var request = pendingControl; clearTimeout(controlTimer); pendingControl = null;
     var home = !('error' in message) && isObject(message.result) && message.result.isError !== true ? parseHome(message.result.structuredContent) : null;
-    if (!home || !sameScope(home.controls, request.scope) || home.controls.kind !== request.scope.kind || home.controls.revision < request.scope.revision || (['status', 'auth_begin', 'auth_cancel', 'refresh'].indexOf(request.action) < 0 && home.controls.revision === request.scope.revision)) {
+    if (!home || !sameScope(home.controls, request.scope) || home.controls.kind !== request.scope.kind || home.controls.revision < request.scope.revision || (['status', 'auth_begin', 'auth_cancel', 'harness_sign_in', 'harness_sign_in_cancel', 'refresh'].indexOf(request.action) < 0 && home.controls.revision === request.scope.revision)) {
       unknownControl(request.scope, 'Action not confirmed for this test scope. Read current state before more changes.');
       if (request.scope.kind === 'responses-trial' && isObject(message.result) && message.result.isError === true && isObject(message.result.structuredContent)) {
         recoveryNotice = readableError(message.result.structuredContent.error); controlNotice = recoveryNotice;
       }
     } else {
-      if (request.action === 'auth_cancel' || request.action === 'auth_begin') clearLink();
+      if (['auth_cancel', 'auth_begin', 'harness_sign_in', 'harness_sign_in_cancel'].indexOf(request.action) >= 0) clearLink();
       view.home = home; view.data = 'received'; uncertain = false;
       recoveryScope = scopeOf(home.controls); selectionDraft = null;
       if (home.controls.kind === 'responses-trial' && ['select', 'status'].indexOf(request.action) >= 0) providerDraft.model = '';
       if (home.controls.kind === 'responses-trial' && request.action === 'connect') providerDraft.open = false;
       if (home.controls.kind === 'responses-trial' && request.action === 'slots') { slotsDraft = null; savedUntil = Date.now() + 3000; document.getElementById('announcement').textContent = 'Saved to your model picker.'; clearTimeout(savedTimer); savedTimer = setTimeout(function () { savedUntil = 0; document.getElementById('announcement').textContent = ''; render(); }, 3000); }
-      controlNotice = home.controls.kind === 'responses-trial' ? ({ auth_begin: 'Sign-in prepared. Open your browser to authorize.', auth_cancel: 'Sign-in cancelled.', status: 'Current connection state received.', connect: 'Connection saved. Discover its models next.', refresh: 'Catalog update requested.', select: 'Connection default saved.', enabled: 'Connection state saved.', slots: 'Saved to your model picker.' }[request.action])
+      controlNotice = home.controls.kind === 'responses-trial' ? ({ auth_begin: 'Sign-in prepared. Open your browser to authorize.', auth_cancel: 'Sign-in cancelled.', harness_sign_in: 'Gemini sign-in started. Open your browser when it is ready.', harness_sign_in_cancel: 'Gemini sign-in cancelled.', status: 'Current connection state received.', connect: 'Connection saved. Discover its models next.', refresh: 'Catalog update requested.', select: 'Connection default saved.', enabled: 'Connection state saved.', slots: 'Saved to your model picker.' }[request.action])
         : request.action === 'status' ? 'Current test state received.' : 'Saved to the declared test store. Native activation is unverified.';
     }
     render(); return;
@@ -1012,7 +1046,7 @@ export function session(observe = observeHome, controls = null) {
           const value = home(controlState);
           return reply({ content: [{ type: 'text', text: controls.message ?? 'Synthetic test connection updated/read. Native profile, authentication and inference remain unverified.' }], structuredContent: value });
         }).catch(error => {
-          const code = ['invalid_request', 'wrong_scope', 'binding_invalid', 'store_unavailable', 'stale_revision', 'invalid', 'no_catalog', 'locked', 'generation_exhausted', 'catalog_invalid', 'catalog_timeout', 'catalog_failed', 'catalog_auth_required', 'catalog_rate_limited', 'catalog_unreachable', 'catalog_protocol_unsupported', 'endpoint_invalid', 'provider_invalid', 'provider_exists', 'credential_endpoint_mismatch', 'secret_storage_unavailable', 'free_model_required', 'auth_expired', 'auth_cancelled', 'auth_denied', 'auth_rate_limited', 'auth_unreachable', 'auth_timeout', 'harness_not_qualified', 'harness_runtime_not_found'].includes(error.code) ? error.code : 'action_failed';
+          const code = ['invalid_request', 'wrong_scope', 'binding_invalid', 'store_unavailable', 'stale_revision', 'invalid', 'no_catalog', 'locked', 'generation_exhausted', 'catalog_invalid', 'catalog_timeout', 'catalog_failed', 'catalog_auth_required', 'catalog_rate_limited', 'catalog_unreachable', 'catalog_protocol_unsupported', 'endpoint_invalid', 'provider_invalid', 'provider_exists', 'credential_endpoint_mismatch', 'secret_storage_unavailable', 'free_model_required', 'auth_expired', 'auth_cancelled', 'auth_denied', 'auth_rate_limited', 'auth_unreachable', 'auth_timeout', 'harness_not_qualified', 'auth_in_progress', 'auth_failed', 'auth_unsupported_flow', 'harness_runtime_not_found'].includes(error.code) ? error.code : 'action_failed';
           return reply({ isError: true, content: [{ type: 'text', text: `Action not confirmed (${code}). Read the current test state before trying again.` }], structuredContent: { error: code } });
         });
       }

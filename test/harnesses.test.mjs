@@ -65,8 +65,9 @@ test('Home lists each other harness with its real state and reason, offers no ac
   const agy = rows.find(r => nodes(r).some(n => n.tag === 'h3' && n.textContent === 'Gemini (Antigravity)'));
   const agyText = nodes(agy).map(n => n.textContent).join(' '), here = list.find(x => x.id === 'antigravity');
   if (here.execution === 'qualified_here') { // this platform has the boundary (Linux): an honest state line and, with agy found, one toggle
-    assert.match(agyText, /(Needs agy 1\.5\.0 or newer|agy found, version not checked \(needs 1\.5\.0 or newer\)) · Available on this system · Off/); assert.match(agyText, /uses|Sign in once with agy itself/);
-    assert.equal(nodes(agy).filter(n => n.tag === 'button').map(n => n.getAttribute('aria-label')).join(), here.canEnable ? 'Turn on Gemini (Antigravity)' : '');
+    assert.match(agyText, /(Needs agy 1\.5\.0 or newer|agy found, version not checked \(needs 1\.5\.0 or newer\)) · Available on this system · Off/); assert.match(agyText, /uses|Sign in with Google here/);
+    assert.equal(nodes(agy).filter(n => n.tag === 'button' && /^Turn /.test(n.getAttribute('aria-label') ?? '')).map(n => n.getAttribute('aria-label')).join(), here.canEnable ? 'Turn on Gemini (Antigravity)' : '');
+    assert.equal(nodes(agy).some(n => n.tag === 'button' && /^Sign in (with Google|again)$/.test(n.textContent)), here.canEnable, 'with agy found, its own Google sign-in is offered beside it');
   } else {
     assert.match(agyText, /(Needs agy 1\.5\.0 or newer|agy found, version not checked \(needs 1\.5\.0 or newer\)) · Sign-in and models not checked · Not available in Bridge yet/); assert.match(h.text('controls'), /not passed its native qualification|hooks run commands outside the Codex sandbox/);
     assert.equal(nodes(agy).some(n => n.tag === 'button'), false);
@@ -80,7 +81,7 @@ test('Home lists each other harness with its real state and reason, offers no ac
 test('the prepared Antigravity launch pins the Google-account route, moves only its log, and drops every ambient Gemini, Google, ADC, agy or other provider override', () => {
   const env = { HOME: '/h', PATH: '/bin', GEMINI_HOME: '/someone-elses', AGY_ACP_CCPA_PROJECT: 'p', AGY_ACP_ENABLE_OAUTH: '0', GEMINI_API_KEY: 'x', GOOGLE_API_KEY: 'x', GOOGLE_APPLICATION_CREDENTIALS: '/adc.json', GOOGLE_CLOUD_PROJECT: 'p', GOOGLE_GENAI_USE_VERTEXAI: 'true', CLOUDSDK_CONFIG: '/c', OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_OAUTH_TOKEN: 'x' };
   const spec = antigravityLaunch({ executable: '/opt/agy', logDir: '/state/agy-logs', env });
-  assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin', AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1' }); assert.equal(spec.authMethod, 'oauth-personal');
+  assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin', AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1', SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0' }); assert.equal(spec.authMethod, 'oauth-personal');
   assert.deepEqual(spec.args, ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', '/state/agy-logs/acp-server.log']); assert.ok(!spec.args.includes('--sandbox'), 'never presented as a boundary');
   assert.throws(() => antigravityLaunch({ executable: 'agy', logDir: '/s' }), { code: 'route_invalid' });
 });

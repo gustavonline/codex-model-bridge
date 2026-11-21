@@ -37,9 +37,9 @@ const descriptors = [
   { id: 'claude-agent-sdk', label: 'Claude Code', transport: '@anthropic-ai/claude-agent-sdk', executes: true, toolBoundary: 'codex-mcp', executable: 'claude' },
   { id: 'antigravity', label: 'Gemini (Antigravity)', transport: 'ACP: agy acp', executable: 'agy', minimumVersion: '1.5.0', auth: 'Google account in the browser (oauth-personal)', boundary: ['linux', 'darwin'],
     reason: 'A workspace\'s own Antigravity hooks run commands outside the Codex sandbox, without asking, at every session start and model call. It stays off until its whole process runs inside a boundary that matches Codex permissions.',
-    reasonWhereSupported: 'Runs inside Model Bridge\'s process boundary, with only the Codex tools Bridge supplies. Sign in once with agy itself; Bridge never sees your Google password. Your account\'s models appear in the model list for new chats.',
+    reasonWhereSupported: 'Runs inside Model Bridge\'s process boundary, with only the Codex tools Bridge supplies. Sign in with Google here; Bridge never sees your password. Your account\'s models appear in the model list for new chats.',
     // Home shows at most 300 characters per reason (server.mjs); test/harnesses.test.mjs checks every variant.
-    reasonWhereSupportedDarwin: 'Runs in Codex\'s own sandbox with only the Codex tools Bridge supplies. On a Mac only in chats with full access: agy\'s local listener needs a grant that also opens local network services. Turning it on accepts that for those chats. Sign in once with agy itself.',
+    reasonWhereSupportedDarwin: 'Runs in Codex\'s own sandbox with only the Codex tools Bridge supplies. On a Mac only in chats with full access: agy\'s local listener needs a grant that also opens local network services. Turning it on accepts that for those chats. Sign in with Google here.',
     reasonCandidateDarwin: 'The macOS boundary (Codex\'s own sandbox) has not passed its native qualification on a Mac yet, so it stays off here. A qualification run enables it with BRIDGE_ANTIGRAVITY_MAC=1.' },
   { id: 'cursor', label: 'Cursor', transport: '@cursor/sdk', auth: 'Cursor account',
     reason: 'The Cursor SDK reports no command or file approval support, so Codex permissions cannot be honoured.' },
@@ -120,10 +120,12 @@ export function harnessRefusal(route) {
 // It does NOT isolate the profile: on 1.5.13 the login and state live under $HOME/.gemini whatever GEMINI_HOME says (an own profile would need
 // --gemini-dir and its own sign-in). Only the server log is moved, into `logDir`. `--sandbox` is not passed: it can silently do nothing.
 // An explicit allowlist of what agy inherits (nothing else of Bridge's environment, so no provider key, token or override reaches it).
-const passed = ['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL', 'TZ', 'SSH_CONNECTION'];
-export function antigravityLaunch({ executable, logDir, env = process.env }) {
+const passed = ['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL', 'TZ'];
+// `interactive` is only Home's sign-in: there agy may open a browser. Every other launch (a chat's session, the catalog probe, a sign-in check)
+// carries the remote marker, so a signed-out agy refuses at once ("No browser is available here") and never opens a browser or waits.
+export function antigravityLaunch({ executable, logDir, env = process.env, interactive = false }) {
   if (!isAbsolute(executable ?? '') || !isAbsolute(logDir ?? '')) throw Object.assign(new Error('Antigravity needs an absolute executable and log directory'), { code: 'route_invalid' });
   const kept = Object.fromEntries(passed.filter(k => typeof env[k] === 'string').map(k => [k, env[k]]));
   return { command: executable, args: ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(logDir, 'acp-server.log')], authMethod: 'oauth-personal',
-    env: { ...kept, AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1' } };
+    env: { ...kept, AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1', ...(interactive ? {} : { SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0' }) } };
 }
