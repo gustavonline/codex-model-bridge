@@ -40,7 +40,29 @@ Once it is on, Gemini appears as a connected provider, like Claude:
 - While it is off, or its catalog is not loaded, a saved selection stays in the library as unavailable, is not offered, and is never rewritten.
 - **Turn off** stops new chats at once; existing chats keep their history and still open, and a turn in one is refused with the reason until it is turned on again.
 
-**Remaining onboarding gap:** Home does not run agy's Google sign-in. Sign in once with `agy` itself (Google's own browser flow); Bridge never sees the password or copies a profile. Until Home exposes that flow, onboarding is not the complete dashboard experience. `BRIDGE_AGY` exists for development only.
+### Signing in with Google
+
+The Gemini card and row in Home offer **Sign in with Google** wherever agy is found and its boundary is supported. It runs agy's own sign-in, ACP `authenticate` with the Google-account method:
+- **Browser:** agy prepares Google's authorization and Home opens it with the host's own link opening (**Open browser**).
+- **Return:** Google returns to agy's own `localhost` callback, so there is no code to copy or paste. Bridge never sees a code, token or password.
+- **Storage:** agy keeps the login in its file storage (`AGY_ACP_FORCE_FILE_STORAGE=1`), which is what the sandboxed sessions read.
+- **Refusal:** Home opens only a Google PKCE authorization that returns to `localhost`. If agy ever offers its paste-code page instead, the sign-in is refused and says so.
+- **Where it runs:** outside the chat boundary, because the browser's redirect has to reach agy's listener. It runs in an empty directory with the usual environment allowlist, creates no session, runs no model and gets no tools; see SECURITY.md.
+
+Home shows whether a file-storage login is saved. A saved login is not proof that Google still accepts it. A chat on a signed-out profile fails at once as `unauthorized`, telling the person to sign in from Home, because every session carries the marker that stops agy from opening a browser.
+
+**On a Mac with an existing agy login:** agy normally keeps its login in the Keychain, which the sandbox cannot use. Sign in once from Home, which writes the file-storage login. Before this, a sandboxed turn waited on a browser sign-in until its 120 s bound; that is what the Mac run of 0c3870d measured. Now it is refused at once.
+
+`BRIDGE_AGY` exists for development only.
+
+## Bridge chats in the chat list
+
+Native `thread/list` lists only threads that have a native user turn. A Claude or Gemini chat's host thread has none, because its model never runs there, so native's own listing never includes it. This was measured on 0.166.0 and 0.171.0-alpha.13 with throwaway profiles: no filter returns such a thread, not even `includedThreadIds`, before or after a restart.
+
+Bridge therefore answers `thread/list` with native's rows plus its own Claude and Gemini chats that have at least one turn:
+- **Filters:** archived, cwd, provider, source kind, title search, included and excluded IDs, project and section.
+- **Order and paging:** Bridge sorts by the requested key and pages with its own cursors. With no such chat, the listing is native's own paging, unchanged.
+- **Not covered:** `thread/search` does not find Bridge's chats. Ancestry and attachment filters leave them out, and a `section_position` sort keeps native's order only.
 
 ## Child chats and the mailbox
 

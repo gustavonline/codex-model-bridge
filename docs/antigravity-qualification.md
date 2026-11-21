@@ -65,6 +65,12 @@ Since then:
 
 The account's model list is read by a short probe that belongs to no chat: it gets no prompt and no tools, but on macOS it needs the same local-listener grant. Any chat's model list can start it. It runs only with the consent recorded by Home's Turn on, and never before that, not even the boundary canary.
 
+**Sign-in (agy 1.5.13, measured with throwaway profiles, nothing completed).**
+- **`agy acp --login`:** sends Google back to `https://antigravity.google/oauth-callback` and asks for the code to be pasted, with or without a terminal. Model Bridge does not use it.
+- **ACP `authenticate` (`oauth-personal`) on a signed-out profile that may open a browser:** agy calls the system opener with an authorization that returns to `http://localhost:<port>/auth/callback`, its own listener. No paste is involved. This is Home's sign-in.
+- **The same call with the remote marker (`SSH_CONNECTION`):** refused at once with "No browser is available here". Every session and catalog probe sets that marker.
+- **File-storage login:** lives at `~/.gemini/antigravity-cli/antigravity-oauth-token`. Home reports only whether it exists, and never reads it.
+
 Still not done:
 - a live macOS Gemini turn (needs the owner's agy sign-in under file storage);
 - approval mapping per Codex sandbox and approval combination is not tested.
