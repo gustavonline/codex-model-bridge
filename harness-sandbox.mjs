@@ -1,6 +1,6 @@
-// Whole-process boundary for an agent harness that runs its own tools (Linux: bubblewrap). Everything the harness and anything it starts
-// (its shell, hooks, plugins, MCP children) can do is bounded by the OS, not by the harness's own permission prompts:
-//  - only an allowlist is mounted: the system directories (/usr, /etc and their links), the harness's own runtime, the workspace (read-only)
+// Whole-process boundary for an agent harness that runs its own tools. Everything the harness and anything it starts
+// (its shell, hooks, plugins, MCP children) can do is bounded by the OS, not by the harness's own permission prompts. On Linux:
+//  - only an allowlist is mounted: the system directories (/usr, /etc and their links), the harness's own runtime, its working directory (read-only)
 //    and its own state (writable), plus a private /tmp. Nothing from /run, /var, /srv, other homes or credential stores is visible, so no
 //    host Unix socket (a container daemon, a session bus, another tool's credentials) can be reached;
 //  - there is no network: the process sees loopback only. Outbound HTTPS leaves through a Bridge-side CONNECT proxy that admits exact

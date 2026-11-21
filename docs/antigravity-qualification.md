@@ -43,7 +43,7 @@ The minimum boundary is therefore OS containment of agy's whole process tree. It
 
 `harness-sandbox.mjs` runs agy in bubblewrap. It mounts only an allowlist:
 - `/usr`, `/etc` and their links, agy's own install directory, Node and the relay, all read-only;
-- the workspace, read-only;
+- a generated empty working directory, read-only (the chat's workspace is not mounted; agy reaches it only through Codex's tools);
 - agy's own state (`~/.gemini`), writable;
 - a private `/tmp`.
 
@@ -59,7 +59,7 @@ An earlier version bound the whole root read-only. A review measured that host U
 Since then:
 - The adapter is wired into chat routing; see [harnesses](harnesses.md).
 - agy works in a generated empty directory, so workspace customizations never load.
-- macOS uses Codex's own sandbox. Native Mac proofs: the boundary canary, the stdio relay over the exact socket with the network proxy active, and agy booting.
+- macOS uses Codex's own sandbox. Native Mac proofs: the boundary canary, the stdio relay over the exact socket with the network proxy active, and agy booting. Until a live Mac turn passes, macOS is offered only with the qualification switch `BRIDGE_ANTIGRAVITY_MAC=1`.
 
 **macOS local listener.** agy starts its own language server on `127.0.0.1`. Under Codex's sandbox that requires `allow_local_binding`, which the coordinator measured also opens raw loopback to every local service. So on macOS a Gemini turn runs only in a chat whose native-confirmed sandbox is full access (`dangerFullAccess`), where the chat's own Codex shell already reaches those services. Any other chat is refused, and Bridge never widens it.
 

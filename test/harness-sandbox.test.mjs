@@ -48,11 +48,16 @@ test('the CONNECT proxy admits only exact host:port pairs, records each decision
 });
 
 test('inside bubblewrap the whole tree is read-only except its own state and /tmp, has no network, reaches only admitted targets, and dies with the sandbox', { skip: !(await sandboxAvailable()) && 'bubblewrap is not available here' }, async () => {
-  const root = temp(), ws = join(root, 'ws'), state = join(root, 'state'), outside = join(process.cwd(), 'sbx-outside-probe-' + process.pid); mkdirSync(ws); mkdirSync(state); writeFileSync(join(ws, 'README'), 'r'); // `outside` is on disk, outside /tmp and the workspace
+  // `outside` is on disk, outside /tmp, the workspace and the checkout (wherever that lives); the sleep marker is unique to this run.
+  mkdirSync(join(homedir(), '.cache'), { recursive: true });
+  const root = temp(), ws = join(root, 'ws'), state = join(root, 'state'), outsideDir = mkdtempSync(join(homedir(), '.cache', 'bridge-sbxout-')), outside = join(outsideDir, 'probe');
+  mkdirSync(ws); mkdirSync(state); writeFileSync(join(ws, 'README'), 'r');
+  const marker = String(100000 + Math.floor(Math.random() * 800000));
   const target = createServer(s => s.end('pong')); await new Promise(r => target.listen(0, '127.0.0.1', r)); const port = target.address().port;
   // A host Unix socket and a credential-like file in a home directory, as another tool would leave them: both must be unreachable inside.
   const homeDir = mkdtempSync(join(homedir(), '.cache', 'bridge-sbxtest-')), hostSocket = join(homeDir, 'host.sock'), secret = join(homeDir, 'credentials.json');
   writeFileSync(secret, '{"synthetic":true}'); const host = createServer(c => c.end('host')); await new Promise(r => host.listen(hostSocket, r));
+  let s; try {
   const probe = `
     const fs = require('node:fs'), net = require('node:net'), { spawn } = require('node:child_process');
     const out = {}; const tryWrite = p => { try { fs.writeFileSync(p, 'x'); return 'written'; } catch (e) { return e.code; } };
@@ -66,8 +71,8 @@ test('inside bubblewrap the whole tree is read-only except its own state and /tm
     const via = target => new Promise(r => { const c = net.connect(18080, '127.0.0.1', () => c.write('CONNECT ' + target + ' HTTP/1.1\\r\\n\\r\\n')); let b = ''; c.on('data', d => { b += d; if (b.includes('pong') || b.includes('403')) { c.destroy(); r(b.includes('pong') ? 'pong' : '403'); } }); c.on('error', e => r(e.code)); });
     const direct = () => new Promise(r => { const c = net.connect(${port}, '127.0.0.1'); c.on('connect', () => { c.destroy(); r('connected'); }); c.on('error', e => r(e.code)); });
     (async () => { await probeHost(); out.allowed = await via('127.0.0.1:${port}'); out.denied = await via('127.0.0.1:${port + 1}'); out.direct = await direct();
-      const kid = spawn('sleep', ['3137'], { detached: true, stdio: 'ignore' }); out.kidPid = kid.pid; kid.unref(); process.stdout.write(JSON.stringify(out) + '\\n'); process.stdin.on('end', () => process.exit(0)); process.stdin.resume(); setInterval(() => {}, 1000); })();`;
-  const s = await startSandboxed({ command: process.execPath, args: ['-e', probe], cwd: ws, env: { PATH: '/usr/bin:/bin', HOME: root }, writable: [state], allow: [`127.0.0.1:${port}`], upstream: null });
+      const kid = spawn('sleep', ['${marker}'], { detached: true, stdio: 'ignore' }); out.kidPid = kid.pid; kid.unref(); process.stdout.write(JSON.stringify(out) + '\\n'); process.stdin.on('end', () => process.exit(0)); process.stdin.resume(); setInterval(() => {}, 1000); })();`;
+  s = await startSandboxed({ command: process.execPath, args: ['-e', probe], cwd: ws, env: { PATH: '/usr/bin:/bin', HOME: root }, writable: [state], allow: [`127.0.0.1:${port}`], upstream: null });
   let err = ''; s.child.stderr.on('data', d => { err += d; });
   const out = JSON.parse(await new Promise((r, reject) => { let b = ''; s.child.stdout.on('data', d => { b += d; if (b.includes('\n')) r(b); }); s.child.once('exit', () => reject(new Error('sandboxed probe exited: ' + err.slice(-600)))); }));
   assert.deepEqual([out.workspace, out.state, out.tmp, out.read], ['EROFS', 'written', 'written', 'r']); assert.ok(['EROFS', 'ENOENT'].includes(out.outside), out.outside);
@@ -77,8 +82,9 @@ test('inside bubblewrap the whole tree is read-only except its own state and /tm
   assert.deepEqual(await s.close(), { state: 'exited' }); assert.equal(existsSync(s.runDir), false);
   assert.equal(existsSync(join(ws, 'w')) || existsSync(outside), false, 'nothing written outside');
   // a detached grandchild (as a hook could start) does not outlive the sandbox: its PID namespace ends with it
-  const alive = (() => { try { return execFileSync('pgrep', ['-f', 'sleep 3137'], { encoding: 'utf8' }).trim(); } catch { return ''; } })();
-  assert.equal(alive, '', 'no process of the sandbox is left'); target.close(); host.close(); rmSync(homeDir, { recursive: true, force: true });
+  const alive = (() => { try { return execFileSync('pgrep', ['-xf', `sleep ${marker}`], { encoding: 'utf8' }).trim(); } catch { return ''; } })();
+  assert.equal(alive, '', 'no process of the sandbox is left');
+  } finally { await s?.close().catch(() => {}); target.close(); host.close(); for (const d of [homeDir, outsideDir, root]) rmSync(d, { recursive: true, force: true }); }
 });
 
 test('the macOS backend generates a private, randomly named Codex profile: minimal reads, own writes, exact domains and one exact socket; nothing trusted or copied', async () => {
