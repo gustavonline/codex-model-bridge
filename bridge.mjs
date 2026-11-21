@@ -367,6 +367,40 @@ export class Bridge {
         developer_instructions: record.modeInstructions ?? null, ...record.nativeSettings?.collaborationMode?.settings,
         model: record.nativeModel ?? record.model, reasoning_effort: record.nativeEffort ?? null } } };
   }
+  // thread/list: native's rows, with each Bridge chat shown as Bridge holds it, PLUS the Bridge chats native does not list. Native lists only threads
+  // with a native user turn; a Claude or Gemini chat's host thread has none (its model never runs there), so after a restart native's listing
+  // alone loses it. With no such chat this is native's own paging. Otherwise the filtered native listing is read to its end (bounded), Bridge's
+  // own chats are added under the same filters, and the result is sorted and paged with cursors Bridge issues. Public protocol only; nothing
+  // is written to native or invented.
+  async listThreads(params) {
+    const shown = thread => { const saved = this.records.get(thread.id); if (!saved) return thread; this.metadata(saved, thread); return this.thread(saved, false); };
+    const { cursor, limit, ...filters } = params, ours = typeof cursor === 'string' && cursor.startsWith('bridge-own:');
+    const own = [...this.records.values()].filter(r => listable(r, filters, this.thread(r, false)));
+    if (!own.length && !ours) { const page = await this.native.request('thread/list', { ...params, modelProviders: params.modelProviders ?? [] }); return { ...page, data: page.data.map(shown) }; }
+    if (limit != null && !(Number.isInteger(limit) && limit > 0)) throw new RpcError('limit must be a positive integer', -32602);
+    const key = createHash('sha256').update(JSON.stringify(filters, Object.keys(filters).sort())).digest('base64url').slice(0, 16);
+    let after = null;
+    if (cursor != null) {
+      try { after = ours ? JSON.parse(Buffer.from(cursor.slice(11), 'base64url').toString('utf8')) : null; } catch { after = null; }
+      if (!after || after.f !== key || typeof after.id !== 'string' || !Number.isFinite(after.v)) throw new RpcError('This list cursor does not belong to this listing; start again without one.', -32602);
+    }
+    const rows = [], seen = new Set(); let next = null, pages = 0;
+    do {
+      if (++pages > 100) throw new RpcError('The chat list is too large to read in one listing; narrow it with a filter.', -32602);
+      const page = await this.native.request('thread/list', { ...filters, modelProviders: filters.modelProviders ?? [], limit: 100, ...(next ? { cursor: next } : {}) });
+      for (const t of page.data ?? []) if (typeof t?.id === 'string' && !seen.has(t.id)) { seen.add(t.id); rows.push(shown(t)); }
+      next = typeof page.nextCursor === 'string' && page.nextCursor ? page.nextCursor : null;
+    } while (next);
+    for (const r of own) if (!seen.has(r.thread.id)) rows.push(this.thread(r, false));
+    const field = { updated_at: 'updatedAt', recency_at: 'updatedAt' }[filters.sortKey] ?? 'createdAt', sign = filters.sortDirection === 'asc' ? 1 : -1;
+    const value = t => Number.isFinite(t[field]) ? t[field] : Number.isFinite(t.createdAt) ? t.createdAt : 0;
+    const order = (a, b) => sign * (value(a) - value(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    rows.sort(order);
+    const start = after ? rows.findIndex(t => order(t, { id: after.id, [field]: after.v, createdAt: after.v }) > 0) : 0;
+    const from = start < 0 ? rows.length : start, size = limit ?? 50, data = rows.slice(from, from + size), last = data.at(-1);
+    const more = from + size < rows.length && last;
+    return { data, nextCursor: more ? 'bridge-own:' + Buffer.from(JSON.stringify({ f: key, v: value(last), id: last.id })).toString('base64url') : null, backwardsCursor: null };
+  }
   thread(record, withTurns = true) {
     return { ...record.thread, model: record.model, modelProvider: provider(record),
       reasoningEffort: record.effort, updatedAt: record.updatedAt,
@@ -1293,14 +1327,7 @@ export class Bridge {
       try { record = await adoptNativeThread(this, params); }
       finally { this.adopting.delete(params.threadId); }
     }
-    if (method === 'thread/list') {
-      const page = await this.native.request(method, { ...params, modelProviders: params.modelProviders ?? [] });
-      return { ...page, data: page.data.map(thread => {
-        const saved = this.records.get(thread.id);
-        if (!saved) return thread;
-        this.metadata(saved, thread); return this.thread(saved, false);
-      }) };
-    }
+    if (method === 'thread/list') return this.listThreads(params ?? {});
     if (record) {
       if (method.startsWith('thread/queue/')) return queueRequest(this, record, method, params, internal);
       if (method === 'thread/resume' && this.resuming.has(record.thread.id)) return this.resume(record, params);
@@ -2046,6 +2073,25 @@ export class Bridge {
   }
 }
 
+// Whether a Bridge chat belongs in a thread/list view, decided by native's own filters on what Bridge holds for it. A chat without a turn is not
+// listed (native hides empty threads too); a filter Bridge cannot decide for its chats (ancestry, attachment) leaves them out.
+const INTERACTIVE = new Set(['cli', 'vscode', 'appServer']);
+function listable(record, f, view) {
+  const t = record.thread, kind = typeof t.source === 'string' ? t.source : t.source?.subAgent ? 'subAgent' : 'unknown';
+  // Only a chat whose model runs outside native (Claude Code, Antigravity): a managed native chat has native turns, so native decides its rows.
+  if (!['claude', 'antigravity'].includes(record.provider ?? 'claude')) return false;
+  if (!record.turns.length || (!!record.archived) !== (f.archived === true)) return false;
+  if (f.parentThreadId != null || f.ancestorThreadId != null || f.attachedToThreadId != null) return false;
+  if (f.cwd != null && ![].concat(f.cwd).includes(t.cwd)) return false;
+  if (Array.isArray(f.modelProviders) && f.modelProviders.length && ![view.modelProvider, record.hostProvider, record.nativeProvider].some(p => f.modelProviders.includes(p))) return false;
+  // No recorded source (an older record): created through the desktop, so in the default interactive view; an explicit list must name 'unknown'.
+  if (Array.isArray(f.sourceKinds) && f.sourceKinds.length ? !f.sourceKinds.includes(kind) : t.source != null && !INTERACTIVE.has(kind)) return false;
+  if (typeof f.searchTerm === 'string' && f.searchTerm && !String(t.name ?? t.preview ?? '').toLowerCase().includes(f.searchTerm.toLowerCase())) return false;
+  if (Array.isArray(f.includedThreadIds) && !f.includedThreadIds.includes(t.id)) return false;
+  if (Array.isArray(f.excludedThreadIds) && f.excludedThreadIds.includes(t.id)) return false;
+  for (const k of ['projectId', 'sectionId']) if (Object.hasOwn(f, k) && (t[k] ?? null) !== f[k]) return false;
+  return f.sortKey !== 'section_position'; // a position Bridge does not hold: native's own order only
+}
 // Whether agy's local listener may be granted for this chat's turn: always on Linux (bubblewrap's own network namespace isolates loopback); on
 // macOS only when the chat's native-confirmed sandbox is full access, where its own Codex shell already reaches every local service.
 export function antigravityLocalBindingAllowed(platform, record) {
