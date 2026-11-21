@@ -41,8 +41,10 @@ test('statuses keep runtime, sign-in, models and execution as separate facts; a 
   for (const h of [...none, ...found]) assert.deepEqual([h.signIn, h.catalog, typeof h.reason], ['unknown', 'unknown', 'string']);
   for (const h of [...none, ...found].filter(h => h.id !== 'antigravity')) assert.equal(h.execution, 'not_qualified');
   const agy = found.find(h => h.id === 'antigravity'); assert.deepEqual([agy.runtime, agy.minimumVersion, agy.executable], ['found', '1.5.0', 'agy']);
-  const mac = harnessStatuses({ find: () => '/opt/agy', platform: 'darwin' }).find(h => h.id === 'antigravity'), linux = harnessStatuses({ find: () => '/opt/agy', platform: 'linux' }).find(h => h.id === 'antigravity');
-  assert.deepEqual([mac.execution, mac.enabled, mac.canEnable], ['not_qualified', undefined, undefined]); assert.match(mac.reason, /outside the Codex sandbox/);
+  const other = harnessStatuses({ find: () => '/opt/agy', platform: 'win32' }).find(h => h.id === 'antigravity'), linux = harnessStatuses({ find: () => '/opt/agy', platform: 'linux' }).find(h => h.id === 'antigravity');
+  const mac = harnessStatuses({ find: () => '/opt/agy', platform: 'darwin' }).find(h => h.id === 'antigravity');
+  assert.deepEqual([other.execution, other.enabled, other.canEnable], ['not_qualified', undefined, undefined]); assert.match(other.reason, /outside the Codex sandbox/);
+  assert.deepEqual([mac.execution, mac.canEnable], ['qualified_here', true]); assert.match(mac.reason, /only in chats with full access/);
   assert.deepEqual([linux.execution, linux.enabled, linux.canEnable], ['qualified_here', false, true]); assert.match(linux.reason, /process boundary/);
   assert.equal(none.find(h => h.id === 'antigravity').runtime, 'not_found'); assert.equal(none.find(h => h.id === 'cursor').runtime, 'not_applicable');
 });
@@ -103,7 +105,7 @@ test('a runtime installed in the usual per-user or Homebrew place is found even 
 test('Home turns Antigravity on for new chats where its boundary is supported, and Bridge reads that persisted choice; anything else is refused', async () => {
   const p = prepareProviderHome(join(mkdtempSync(join(tmpdir(), 'bridge-harness-')), 'scope')), state = p.state, bin = mkdtempSync(join(tmpdir(), 'bridge-agybin-')), agy = join(bin, 'agy');
   writeFileSync(agy, '#!/bin/sh\n', { mode: 0o755 });
-  assert.throws(() => setHarnessEnabled(state, 'antigravity', true, { platform: 'darwin', find: () => agy }), { code: 'harness_not_qualified' });
+  assert.throws(() => setHarnessEnabled(state, 'antigravity', true, { platform: 'win32', find: () => agy }), { code: 'harness_not_qualified' });
   assert.throws(() => setHarnessEnabled(state, 'antigravity', true, { platform: 'linux', find: () => null }), { code: 'harness_runtime_not_found' });
   assert.throws(() => setHarnessEnabled(state, 'cursor', true, { platform: 'linux', find: () => agy }), { code: 'harness_not_qualified' });
   assert.throws(() => setHarnessEnabled(state, 'antigravity', true, { platform: 'linux', find: () => agy, expectedRevision: 5 }), { code: 'stale_revision' });

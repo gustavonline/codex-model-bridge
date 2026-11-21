@@ -127,3 +127,50 @@ test('on macOS a Gemini turn runs only in a full-access chat (agy needs a local 
     assert.equal(a.opened.at(-1).localBinding, false, 'Linux never asks for it (bubblewrap isolates loopback)');
   } finally { f.close(); }
 });
+
+test('macOS gaps closed: no catalog probe without consent, a lost grant stops the running turn, native outranks a saved grant, a child is decided on its own record', async () => {
+  const { mkdtempSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path');
+  const { setHarnessEnabled, readHarnessSettings } = await import('../plugins/codex-claude/home/harnesses.mjs');
+  // 1. the catalog probe (no chat) on a Mac needs the consent stored by Home's Turn on
+  const root = mkdtempSync(join(tmpdir(), 'bridge-agy-consent-')), f = fixture('openai', { connectionRoot: root }); f.bridge.platform = 'darwin';
+  const opened = []; f.bridge.antigravityRuntime = () => ({ executable: process.execPath, home: '/h' }); f.bridge.antigravityAgent = () => 'bridge-mcp-000000000000';
+  const { sandboxAvailable } = await import('../harness-sandbox.mjs'); void sandboxAvailable;
+  const before = process.env.BRIDGE_AGY; delete process.env.BRIDGE_AGY;
+  try {
+    const c = await f.bridge.antigravityCatalog({ refresh: true }); assert.equal(c.reason, 'local_listener_consent_required'); assert.equal(opened.length, 0);
+    setHarnessEnabled(root, 'antigravity', true, { platform: 'darwin', find: () => process.execPath });
+    assert.equal(readHarnessSettings(root).antigravity.localListener, true, 'Turn on on a Mac records the consent');
+    setHarnessEnabled(root, 'antigravity', false, { platform: 'darwin' }); assert.equal(readHarnessSettings(root).antigravity.localListener, undefined, 'Turn off withdraws it');
+  } finally { if (before !== undefined) process.env.BRIDGE_AGY = before; f.close(); }
+  // 2. a running full-access turn ends when the chat loses full access
+  const hold = deferred(), g = fixture(), a = agy(g, { hold }); g.bridge.platform = 'darwin';
+  try {
+    const id = await start(g), record = g.bridge.records.get(id); record.sandbox = { type: 'dangerFullAccess' };
+    g.bridge.ensureLoaded = async () => {}; // keep the native-confirmed full access of this synthetic chat
+    const t = (await g.send(id, 'long')).turn; while (!a.opened.length) await new Promise(r => setTimeout(r, 5));
+    assert.equal(a.opened[0].localBinding, true);
+    await g.bridge.nativeNotification('thread/settings/updated', { threadId: id, threadSettings: { ...g.bridge.hostSettings(record), sandboxPolicy: { type: 'readOnly', networkAccess: false } } });
+    await g.done(t.id); assert.equal(g.bridge.records.get(id).turns.at(-1).status, 'interrupted'); assert.ok(a.cancelled.length >= 1, 'agy was cancelled');
+  } finally { hold.resolve({ stopReason: 'cancelled' }); g.close(); }
+  // 3. a saved full-access grant does not survive what native reports after a restart
+  const h = fixture(); agy(h); h.bridge.platform = 'darwin';
+  try {
+    const id = await start(h); const r = h.bridge.records.get(id); r.sandbox = { type: 'dangerFullAccess' }; h.bridge.save(r);
+    h.restart(); agy(h); h.bridge.platform = 'darwin';
+    await assert.rejects(h.send(id, 'x'), /runs only in chats with full access/); assert.equal(h.bridge.records.get(id).sandbox.type, 'readOnly', 'native\'s answer on reopen decides');
+  } finally { h.close(); }
+});
+
+test('a Gemini child on macOS is decided on its own native-confirmed permissions, not its parent\'s', async () => {
+  const hold = deferred(), f = fixture('openai', { coordinateNative: true }), a = agy(f, { hold }); f.bridge.platform = 'darwin';
+  try {
+    const parent = (await f.bridge.request('thread/start', { cwd: f.statePath })).thread.id;
+    await f.bridge.nativeNotification('turn/started', { threadId: parent, turn: { id: 'p1', status: 'inProgress' } });
+    f.bridge.nativeCallers.get(parent).sandbox = { type: 'dangerFullAccess' }; // the parent has full access
+    const r = await f.bridge.toolRequest('item/tool/call', { namespace: sessionNamespace, threadId: parent, turnId: 'p1', callId: randomUUID(), tool: 'manage',
+      arguments: { operation: 'create', model: 'antigravity/gemini-x', text: 'hello', requestId: 'agy-mac-child-01' } });
+    const text = r.contentItems[0].text;
+    assert.equal(r.success, false, 'the child (read-only as native reports it) refuses its first message'); assert.match(text, /did not receive the same permissions|full access/);
+    assert.equal(a.opened.length, 0, 'no agy process for it');
+  } finally { hold.resolve({ stopReason: 'end_turn' }); f.close(); }
+});

@@ -200,13 +200,17 @@ async function startCodexSandboxed({ command, args, cwd, env = {}, readable = []
   })();
   return { child, runDir, decisions: [], close, stderr: () => stderrTail };
 }
-// The Mac canary, once per process: the generated profile must start a command and must DENY reading a file outside it. Anything else refuses.
+// The Mac canary, once per Codex binary: the generated profile must start a command and DENY reading a file outside it, both as generated and
+// with agy's local listener granted (the widened profile used for full-access chats). Anything else refuses.
 async function codexSandboxCanary(codex) {
+  return await codexSandboxCanaryRun(codex, false) && await codexSandboxCanaryRun(codex, true);
+}
+async function codexSandboxCanaryRun(codex, localBinding) {
   if (!isAbsolute(codex ?? '') || !existsSync(codex)) return false;
   const root = sandboxRunDir(), foreign = mkdtempSync(join(tmpdir(), 'bridge-canary-foreign-')), secret = join(foreign, 'canary');
   writeFileSync(secret, 'canary'); mkdirSync(join(root, 'run'));
   try {
-    const box = await startCodexSandboxed({ command: '/bin/sh', args: ['-c', `cat ${JSON.stringify(secret)} >/dev/null 2>&1 && echo LEAK || echo DENIED`], cwd: root, codex, runDir: join(root, 'run'), stateRoot: join(root, 'state') });
+    const box = await startCodexSandboxed({ command: '/bin/sh', args: ['-c', `cat ${JSON.stringify(secret)} >/dev/null 2>&1 && echo LEAK || echo DENIED`], cwd: root, codex, runDir: join(root, 'run'), stateRoot: join(root, 'state'), localBinding });
     let out = ''; box.child.stdout.on('data', b => { out += b; }); await new Promise(r => box.child.once('exit', r)); await box.close();
     return out.trim() === 'DENIED';
   } catch { return false; }

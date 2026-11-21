@@ -1037,6 +1037,10 @@ export class Bridge {
         record.activePermissionProfile = settings.activePermissionProfile;
         record.disabledPluginIds = settings.disabledPluginIds ?? record.disabledPluginIds;
         record.options.permissions = settings.activePermissionProfile?.id;
+        // An Antigravity turn running with agy's local listener (macOS, full-access chats only) ends at once when the chat loses full access.
+        if (record.provider === 'antigravity' && this.active.get(params.threadId)?.localBinding && !antigravityLocalBindingAllowed(this.platform ?? process.platform, record)) {
+          this.log('antigravity.grant_lost', { threadId: params.threadId }); this.active.get(params.threadId).controller.abort();
+        }
         delete record.options.sandbox;
         this.settingsWaiters.get(params.threadId)?.(settings); this.save(record);
         params = { ...params, threadSettings: this.settingsView(record, settings) };
@@ -1844,7 +1848,10 @@ export class Bridge {
       if (!runtime || !(await sandboxAvailable())) return { models: [], levels: [], reason: runtime ? 'boundary_unavailable' : 'runtime_not_found' };
       const cwd = mkdtempSync(join(tmpdir(), 'bridge-agy-catalog-'));
       try {
-        const session = await openAntigravity({ ...runtime, cwd, agentName: this.antigravityAgent(runtime.home), mcpServe: stream => stream.destroy(), codexTools: new Set() });
+        // The catalog probe belongs to no chat. On macOS agy's local listener is granted here only with the person's consent from Home's Turn on.
+        const mac = (this.platform ?? process.platform) === 'darwin', consent = process.env.BRIDGE_AGY ? true : readHarnessSettings(this.connectionRoot ?? '').antigravity?.localListener === true;
+        if (mac && !consent) return { models: [], levels: [], reason: 'local_listener_consent_required' };
+        const session = await openAntigravity({ ...runtime, cwd, agentName: this.antigravityAgent(runtime.home), mcpServe: stream => stream.destroy(), codexTools: new Set(), localBinding: mac });
         try { return { models: session.catalog.models.map(m => ({ id: harnessModelId('antigravity', 'google', m.id), model: m.id, name: m.name })), levels: session.catalog.levels }; }
         finally { await session.close(); }
       } catch (error) { this.log('antigravity.catalog_failed', errorMetadata(error)); return { models: [], levels: [], reason: 'catalog_failed' }; }
@@ -1929,9 +1936,13 @@ export class Bridge {
         record.nativePersisted = true; this.save(record);
       }
       const runtime = this.antigravityRuntime(); if (!runtime) throw new Error('Antigravity (agy) is no longer found on this system; nothing was sent.');
+      // The grant is decided again immediately before agy starts (permissions may have changed since the turn was accepted).
+      const platform = this.platform ?? process.platform;
+      if (!antigravityLocalBindingAllowed(platform, record)) throw new Error('This chat no longer has full access, which Gemini (Antigravity) needs on this Mac; nothing was sent.');
+      running.localBinding = platform === 'darwin';
       session = await (this.antigravityOpen ?? openAntigravity)({ ...runtime, cwd: record.thread.cwd, agentName: this.antigravityAgent(runtime.home), mcpServe,
         codexTools: new Set(['find_tools', 'call_tool', 'find_skills', 'read_skill', 'shell', 'read_history']), resume: record.acpSessionId,
-        localBinding: (this.platform ?? process.platform) === 'darwin' && antigravityLocalBindingAllowed('darwin', record),
+        localBinding: running.localBinding,
         onEvent: event => {
           if (event.type !== 'text' || running.finished) return;
           if (!text) { text = { id: randomUUID(), type: 'agentMessage', text: '', phase: null }; item('started', text); }

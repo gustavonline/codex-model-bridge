@@ -35,9 +35,10 @@ export function routeOf(id, { isClaude }) {
 const descriptors = [
   { id: 'codex', label: 'Codex', transport: 'Codex app-server (native)', executes: true, toolBoundary: 'codex' },
   { id: 'claude-agent-sdk', label: 'Claude Code', transport: '@anthropic-ai/claude-agent-sdk', executes: true, toolBoundary: 'codex-mcp', executable: 'claude' },
-  { id: 'antigravity', label: 'Gemini (Antigravity)', transport: 'ACP: agy acp', executable: 'agy', minimumVersion: '1.5.0', auth: 'Google account in the browser (oauth-personal)', boundary: ['linux'],
+  { id: 'antigravity', label: 'Gemini (Antigravity)', transport: 'ACP: agy acp', executable: 'agy', minimumVersion: '1.5.0', auth: 'Google account in the browser (oauth-personal)', boundary: ['linux', 'darwin'],
     reason: 'A workspace\'s own Antigravity hooks run commands outside the Codex sandbox, without asking, at every session start and model call. It stays off until its whole process runs inside a boundary that matches Codex permissions.',
-    reasonWhereSupported: 'Runs inside Model Bridge\'s process boundary, with only the Codex tools Bridge supplies. Sign in once with agy itself; Bridge never sees your Google password. Your account\'s models appear in the model list for new chats.' },
+    reasonWhereSupported: 'Runs inside Model Bridge\'s process boundary, with only the Codex tools Bridge supplies. Sign in once with agy itself; Bridge never sees your Google password. Your account\'s models appear in the model list for new chats.',
+    reasonWhereSupportedDarwin: 'Runs inside Codex\'s own sandbox with only the Codex tools Bridge supplies. On this Mac it runs only in chats with full access, because agy\'s own local listener needs a grant that also opens this Mac\'s local network services. Turning it on accepts that for full-access chats. Sign in once with agy itself.' },
   { id: 'cursor', label: 'Cursor', transport: '@cursor/sdk', auth: 'Cursor account',
     reason: 'The Cursor SDK reports no command or file approval support, so Codex permissions cannot be honoured.' },
   { id: 'muse', label: 'Muse Code', transport: '@muse-code/sdk', auth: 'Muse account', reason: 'Not qualified in Model Bridge yet.' },
@@ -71,7 +72,7 @@ export function harnessStatuses({ find = findExecutable, platform = process.plat
     return { id: h.id, label: h.label, transport: h.transport,
       runtime: h.executable ? (found ? 'found' : 'not_found') : 'not_applicable', ...(h.executable ? { executable: h.executable } : {}),
       ...(h.minimumVersion ? { minimumVersion: h.minimumVersion } : {}), ...(h.auth ? { auth: h.auth } : {}),
-      signIn: 'unknown', catalog: 'unknown', execution: supported ? 'qualified_here' : 'not_qualified', reason: supported ? h.reasonWhereSupported : h.reason,
+      signIn: 'unknown', catalog: 'unknown', execution: supported ? 'qualified_here' : 'not_qualified', reason: supported ? (platform === 'darwin' && h.reasonWhereSupportedDarwin) || h.reasonWhereSupported : h.reason,
       ...(supported ? { enabled: settings?.[h.id]?.enabled === true, canEnable: !!found } : {}) };
   });
 }
@@ -83,7 +84,7 @@ export function readHarnessSettings(root) {
     const v = JSON.parse(readFileSync(join(root, harnessSettingsFile), 'utf8'));
     if (v?.version !== 1 || !Number.isSafeInteger(v.revision)) return { version: 1, revision: 0 };
     const out = { version: 1, revision: v.revision };
-    for (const h of harnesses) { const e = v[h.id]; if (e && typeof e.enabled === 'boolean' && (!e.enabled || isAbsolute(e.executable ?? ''))) out[h.id] = { enabled: e.enabled, ...(e.enabled ? { executable: e.executable } : {}) }; }
+    for (const h of harnesses) { const e = v[h.id]; if (e && typeof e.enabled === 'boolean' && (!e.enabled || isAbsolute(e.executable ?? ''))) out[h.id] = { enabled: e.enabled, ...(e.enabled ? { executable: e.executable, ...(e.localListener === true ? { localListener: true } : {}) } : {}) }; }
     return out;
   } catch { return { version: 1, revision: 0 }; }
 }
@@ -94,7 +95,8 @@ export function setHarnessEnabled(root, id, enabled, { expectedRevision, find = 
   if (expectedRevision !== undefined && expectedRevision !== current.revision) throw Object.assign(new Error('stale'), { code: 'stale_revision' });
   const found = enabled ? find(h.executable) : null;
   if (enabled && !found) throw Object.assign(new Error(`${h.label} is not installed`), { code: 'harness_runtime_not_found' });
-  const next = { ...current, revision: current.revision + 1, [id]: enabled ? { enabled: true, executable: realpathSync(found) } : { enabled: false } };
+  // On macOS turning Antigravity on is also the consent to its local listener (for full-access chats and the catalog probe); turning it off withdraws it.
+  const next = { ...current, revision: current.revision + 1, [id]: enabled ? { enabled: true, executable: realpathSync(found), ...(platform === 'darwin' ? { localListener: true } : {}) } : { enabled: false } };
   const path = join(root, harnessSettingsFile), temp = `${path}.${process.pid}.tmp`;
   writeFileSync(temp, JSON.stringify(next), { mode: 0o600 }); renameSync(temp, path);
   return next;
