@@ -7,7 +7,8 @@ import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { allowlistProxy, bwrapArgs, sandboxAvailable, sandboxRunDir, startSandboxed, systemMounts } from '../harness-sandbox.mjs';
 
-// The whole-process boundary for agent harnesses with their own tools. The bubblewrap case runs only where bubblewrap works (Linux).
+// The whole-process boundary for agent harnesses with their own tools. The bubblewrap case runs only on Linux where bubblewrap works: its
+// read-only (EROFS) and PID-namespace assertions are that backend's, and on a Mac sandboxAvailable() answers for Codex's sandbox instead.
 const temp = () => mkdtempSync(join(tmpdir(), 'bridge-sbxt-'));
 // Opens a CONNECT tunnel; resolves with the status and everything the tunnel delivered (the reply and the payload can share one chunk).
 const tunnel = (socket, target) => new Promise(resolve => {
@@ -57,7 +58,7 @@ test('the CONNECT proxy admits only exact host:port pairs, records each decision
   } finally { for (const s of [target, proxy, upstream, chained]) s?.close(); }
 });
 
-test('inside bubblewrap the whole tree is read-only except its own state and /tmp, has no network, reaches only admitted targets, and dies with the sandbox', { skip: !(await sandboxAvailable()) && 'bubblewrap is not available here' }, async () => {
+test('inside bubblewrap the whole tree is read-only except its own state and /tmp, has no network, reaches only admitted targets, and dies with the sandbox', { skip: process.platform !== 'linux' ? 'bubblewrap is the Linux backend (the macOS backend has its own opt-in test below)' : !(await sandboxAvailable({ platform: 'linux' })) && 'bubblewrap is not available here' }, async () => {
   // `outside` is on disk, outside /tmp, the workspace and the checkout (wherever that lives); the sleep marker is unique to this run.
   mkdirSync(join(homedir(), '.cache'), { recursive: true });
   const root = temp(), ws = join(root, 'ws'), state = join(root, 'state'), outsideDir = mkdtempSync(join(homedir(), '.cache', 'bridge-sbxout-')), outside = join(outsideDir, 'probe');
