@@ -64,7 +64,7 @@ export function acpClient(child, { onRequest, onNotification, maxLine = 8 * 1024
 export const mcpRelay = fileURLToPath(new URL('./harness-mcp-relay.mjs', import.meta.url));
 // Opens one Antigravity session. `mcpServe(stream)` serves Bridge's Codex MCP tools on one relayed connection; `codexTools` are their names; `onEvent`
 // receives { type: 'text', text } | { type: 'tool', id, title, status } | { type: 'permission', title, allowed }. `start` is injectable for tests.
-export async function open({ executable, cwd, home, agentName, mcpServe, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume' }) {
+export async function open({ executable, cwd, home, agentName, mcpServe, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume', localBinding = false }) {
   if (!(await available())) fail('harness_boundary_unavailable', 'Antigravity needs Model Bridge\'s process sandbox, which is not available on this system, so nothing was started.');
   const runDir = sandboxRunDir(), mcpSocket = join(runDir, 'mcp.sock'), http = createServer(stream => { stream.on('error', () => {}); Promise.resolve(mcpServe(stream)).catch(() => stream.destroy()); });
   await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
@@ -75,7 +75,7 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
   // and Codex config are never loaded at all. The workspace itself is not even visible inside the boundary.
   const agyCwd = mkdtempSync(join(tmpdir(), 'bridge-agy-cwd-'));
   let box;
-  try { box = await start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd: agyCwd, env: spec.env, readable: [mcpRelay], writable: [join(home, '.gemini')], allow: googleEndpoints, runDir, mcpSocket }); }
+  try { box = await start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd: agyCwd, env: spec.env, readable: [mcpRelay], writable: [join(home, '.gemini')], allow: googleEndpoints, runDir, mcpSocket, localBinding }); }
   catch (error) { http.close(); rmSync(agyCwd, { recursive: true, force: true }); throw error; }
   let sessionId = null;
   const acp = acpClient(box.child, {

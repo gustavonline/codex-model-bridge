@@ -56,9 +56,15 @@ Re-measured with the existing login (`scripts/live-antigravity.mjs`, and `qualif
 
 An earlier version bound the whole root read-only. A review measured that host Unix sockets stayed reachable, so the mount set is now an allowlist. Tests now check that host sockets and foreign credential files are unreachable.
 
+Since then:
+- The adapter is wired into chat routing; see [harnesses](harnesses.md).
+- agy works in a generated empty directory, so workspace customizations never load.
+- macOS uses Codex's own sandbox. Native Mac proofs: the boundary canary, the stdio relay over the exact socket with the network proxy active, and agy booting.
+
+**macOS local listener.** agy starts its own language server on `127.0.0.1`. Under Codex's sandbox that requires `allow_local_binding`, which the coordinator measured also opens raw loopback to every local service. So on macOS a Gemini turn runs only in a chat whose native-confirmed sandbox is full access (`dangerFullAccess`), where the chat's own Codex shell already reaches those services. Any other chat is refused, and Bridge never widens it.
+
 Still not done:
-- the adapter (`antigravity.mjs`) is not wired into chat routing;
-- the macOS boundary does not exist, so Antigravity is refused there;
+- a live macOS Gemini turn (needs the owner's agy sign-in under file storage);
 - approval mapping per Codex sandbox and approval combination is not tested.
 
 ## What would change this

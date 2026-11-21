@@ -1876,6 +1876,10 @@ export class Bridge {
     this.checkWorkspace(record, params);
     await this.ensureLoaded(record);
     await this.updatePermissions(record, params);
+    // On macOS agy needs a local listener, which Codex's sandbox can grant only together with raw loopback to every local service. So it runs
+    // only in a chat whose native-confirmed permissions already allow everything (full access); any other chat is refused, never widened.
+    if (!antigravityLocalBindingAllowed(this.platform ?? process.platform, record))
+      throw new RpcError('On this Mac, Gemini (Antigravity) runs only in chats with full access: agy needs a local listener that a restricted Codex sandbox would have to widen. Nothing was sent; this chat keeps its permissions.', -32602);
     const level = params.collaborationMode?.settings?.reasoning_effort ?? params.effort;
     if (level != null) {
       const { levels } = await this.antigravityCatalog();
@@ -1927,6 +1931,7 @@ export class Bridge {
       const runtime = this.antigravityRuntime(); if (!runtime) throw new Error('Antigravity (agy) is no longer found on this system; nothing was sent.');
       session = await (this.antigravityOpen ?? openAntigravity)({ ...runtime, cwd: record.thread.cwd, agentName: this.antigravityAgent(runtime.home), mcpServe,
         codexTools: new Set(['find_tools', 'call_tool', 'find_skills', 'read_skill', 'shell', 'read_history']), resume: record.acpSessionId,
+        localBinding: (this.platform ?? process.platform) === 'darwin' && antigravityLocalBindingAllowed('darwin', record),
         onEvent: event => {
           if (event.type !== 'text' || running.finished) return;
           if (!text) { text = { id: randomUUID(), type: 'agentMessage', text: '', phase: null }; item('started', text); }
@@ -1966,6 +1971,11 @@ export class Bridge {
   }
 }
 
+// Whether agy's local listener may be granted for this chat's turn: always on Linux (bubblewrap's own network namespace isolates loopback); on
+// macOS only when the chat's native-confirmed sandbox is full access, where its own Codex shell already reaches every local service.
+export function antigravityLocalBindingAllowed(platform, record) {
+  return platform !== 'darwin' || record?.sandbox?.type === 'dangerFullAccess';
+}
 // A model/list row for an Antigravity model: its explicit route as the ID, the account's own name and thinking levels, never a default.
 function antigravityRow(m, levels) {
   return { id: m.id, model: m.id, displayName: `${m.name} · Antigravity`, description: 'Runs through Google Antigravity in Model Bridge\'s process boundary. New chats only.',

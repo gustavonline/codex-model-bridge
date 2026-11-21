@@ -140,13 +140,16 @@ async function startBubblewrap({ command, args, cwd, env = {}, readable = [], wr
 // The generated config of one session: a private CODEX_HOME holds only this file. The profile name is random, nothing is trusted or copied from
 // the person's own Codex configuration, and the run directory is the only writable place besides the harness's own state.
 const tomlKey = value => JSON.stringify(value);
-export function codexSandboxConfig({ profile, readable = [], writable = [], domains = [], proxyPort = null }) {
+export function codexSandboxConfig({ profile, readable = [], writable = [], domains = [], proxyPort = null, localBinding = false }) {
   const lines = ['approval_policy = "never"', `default_permissions = ${tomlKey(profile)}`, '[features]', 'network_proxy = true', `[permissions.${tomlKey(profile)}.filesystem]`, '":minimal" = "read"'];
   for (const p of readable) lines.push(`${tomlKey(p)} = "read"`);
   for (const p of writable) lines.push(`${tomlKey(p)} = "write"`);
   // allow_upstream_proxy: decided explicitly. The managed proxy may chain through the host's own configured proxy (policy applies first), as
   // a corporate or VM network requires; the harness itself only ever sees the managed proxy.
-  lines.push(`[permissions.${tomlKey(profile)}.network]`, 'enabled = true', ...(proxyPort ? [`proxy_url = "http://127.0.0.1:${proxyPort}"`] : []), 'enable_socks5 = false', 'allow_upstream_proxy = true', `[permissions.${tomlKey(profile)}.network.domains]`);
+  lines.push(`[permissions.${tomlKey(profile)}.network]`, 'enabled = true', ...(proxyPort ? [`proxy_url = "http://127.0.0.1:${proxyPort}"`] : []), 'enable_socks5 = false', 'allow_upstream_proxy = true',
+    // Local binding (agy's own language server listens on 127.0.0.1) also opens raw loopback to every local service (measured on the Mac), so the
+    // caller grants it only for a chat that already has unrestricted access; it is never on by default.
+    ...(localBinding ? ['allow_local_binding = true'] : []), `[permissions.${tomlKey(profile)}.network.domains]`);
   for (const d of domains) lines.push(`${tomlKey(d)} = "allow"`);
   return lines.join('\n') + '\n';
 }
@@ -163,7 +166,7 @@ function descendants(root) {
     return out;
   } catch { return []; }
 }
-async function startCodexSandboxed({ command, args, cwd, env = {}, readable = [], writable = [], allow = [], mcpSocket = null, runDir = null, codex = process.env.BRIDGE_REAL_CODEX, node = process.execPath, stateRoot = null }) {
+async function startCodexSandboxed({ command, args, cwd, env = {}, readable = [], writable = [], allow = [], mcpSocket = null, runDir = null, codex = process.env.BRIDGE_REAL_CODEX, node = process.execPath, stateRoot = null, localBinding = false }) {
   if (!isAbsolute(codex ?? '')) throw Object.assign(new Error('The Codex sandbox needs the desktop\'s Codex CLI (BRIDGE_REAL_CODEX)'), { code: 'harness_boundary_unavailable' });
   runDir ??= sandboxRunDir();
   // The private CODEX_HOME lives under Bridge state, not a temporary directory (Codex refuses helper binaries under /tmp); 0700 and removed after.
@@ -174,7 +177,7 @@ async function startCodexSandboxed({ command, args, cwd, env = {}, readable = []
   const inside = [...new Set([realpathSync(dirname(command)), dirname(node), realpathSync(dirname(codex)), ...readable, ...macRuntimeReads.filter(p => existsSync(p))])];
   // Codex's managed proxy listens on a free local port of this session (the only place outbound traffic can leave, to `domains` only).
   const proxyPort = await new Promise(r => { const sv = createServer(); sv.listen(0, '127.0.0.1', () => { const { port } = sv.address(); sv.close(() => r(port)); }); });
-  writeFileSync(join(codexHome, 'config.toml'), codexSandboxConfig({ profile, readable: [...inside, cwd], writable: [...writable, runDir], domains: allow.map(a => a.replace(/:443$/, '')), proxyPort }), { mode: 0o600 });
+  writeFileSync(join(codexHome, 'config.toml'), codexSandboxConfig({ profile, readable: [...inside, cwd], writable: [...writable, runDir], domains: allow.map(a => a.replace(/:443$/, '')), proxyPort, localBinding }), { mode: 0o600 });
   // The supervisor may chain its managed proxy through the host's own configured proxy (the allowlist applies first); the harness itself only
   // ever sees Codex's managed proxy. Nothing else of Bridge's environment is passed.
   const upstream = Object.fromEntries(['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'].filter(k => typeof process.env[k] === 'string').map(k => [k, process.env[k]]));

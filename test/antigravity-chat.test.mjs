@@ -15,7 +15,7 @@ function agy(f, { hold } = {}) {
   f.bridge.antigravityRuntime = () => ({ executable: '/opt/agy', home: '/home/x' });
   f.bridge.antigravityAgent = () => 'bridge-mcp-000000000000';
   f.bridge.antigravityOpen = async opts => {
-    const sessionId = opts.resume ?? 'agy-' + randomUUID(); opened.push({ resume: opts.resume ?? null, sessionId });
+    const sessionId = opts.resume ?? 'agy-' + randomUUID(); opened.push({ resume: opts.resume ?? null, sessionId, localBinding: opts.localBinding });
     return { sessionId, catalog: { models: [{ id: 'gemini-x' }], levels: ['low', 'high'] }, configure: async () => {},
       prompt: async text => { opts.onEvent({ type: 'text', text: 'echo:' }); opts.onEvent({ type: 'text', text: text.split('\n').at(-1) }); if (hold) { const r = await hold.promise; return r; } return { stopReason: 'end_turn' }; },
       cancel: () => { cancelled.push(sessionId); hold?.resolve({ stopReason: 'cancelled' }); }, close: async () => ({ state: 'exited' }) };
@@ -109,5 +109,21 @@ test('Gemini models join the same library and saved slots: a saved one is offere
     assert.deepEqual([card().enabled, card().catalogState, card().models.every(m => m.available === false)], [false, 'stale', true]);
     setHarnessEnabled(p.state, 'antigravity', true, { platform: 'linux', find: () => process.execPath });
     assert.equal(card().enabled, true); assert.ok(!providerControls(p.bindingPath).snapshot().harnesses.some(h => h.id === 'antigravity'), 'no second row while it is a connected card');
+  } finally { f.close(); }
+});
+
+test('on macOS a Gemini turn runs only in a full-access chat (agy needs a local listener); any other chat is refused and never widened', async () => {
+  const f = fixture(), a = agy(f); f.bridge.platform = 'darwin'; try {
+    const id = await start(f), record = f.bridge.records.get(id);
+    assert.equal(record.sandbox.type, 'readOnly');
+    await assert.rejects(f.send(id, 'x'), /runs only in chats with full access/); assert.equal(a.opened.length, 0, 'no agy process, nothing sent');
+    assert.equal(f.bridge.records.get(id).sandbox.type, 'readOnly', 'its permissions are unchanged');
+    record.sandbox = { type: 'dangerFullAccess' }; // as native confirmed for a full-access chat
+    const t = (await f.send(id, 'y')).turn; await f.done(t.id);
+    assert.deepEqual([f.bridge.records.get(id).turns.at(-1).status, a.opened.at(-1).localBinding], ['completed', true]);
+    record.sandbox = { type: 'workspaceWrite', networkAccess: true, writableRoots: [], excludeSlashTmp: false, excludeTmpdirEnvVar: false };
+    await assert.rejects(f.send(id, 'z'), /runs only in chats with full access/, 'a later turn after its permissions narrowed is refused too');
+    f.bridge.platform = 'linux'; const u = (await f.send(id, 'w')).turn; await f.done(u.id);
+    assert.equal(a.opened.at(-1).localBinding, false, 'Linux never asks for it (bubblewrap isolates loopback)');
   } finally { f.close(); }
 });

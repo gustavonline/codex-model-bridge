@@ -7,7 +7,7 @@ Model Bridge sits beneath the unmodified Codex desktop. A **harness** is the run
 | Codex | Codex app-server (native) | Yes | Native; Bridge does not change it. |
 | Claude Code | `@anthropic-ai/claude-agent-sdk` 0.3.325 | Yes | No native tools: every action goes through the Codex MCP tools, so Codex's sandbox and approvals apply. |
 | Custom Responses endpoints | Codex app-server with a Bridge provider | Yes, in the isolated preview | Native Codex execution against the saved endpoint; see the README for the preview's limits. |
-| Gemini (Antigravity) | ACP, `agy acp` (1.5.0 or newer) | Linux: yes, once turned on in Home. macOS: not yet | It runs inside Model Bridge's process boundary with only the Codex tools Bridge supplies, because a workspace's own Antigravity hooks would otherwise run commands outside the Codex sandbox. macOS needs its own boundary, which is not qualified yet. See [the qualification](antigravity-qualification.md). |
+| Gemini (Antigravity) | ACP, `agy acp` (1.5.0 or newer) | Linux: yes, once turned on in Home. macOS: candidate, only in full-access chats, not yet qualified live | It runs inside Model Bridge's process boundary with only the Codex tools Bridge supplies, because a workspace's own Antigravity hooks would otherwise run commands outside the Codex sandbox. On macOS agy's own local listener needs a grant that opens loopback, so it runs only where the chat already has full access. See [the qualification](antigravity-qualification.md). |
 | Cursor | `@cursor/sdk` | No | The SDK reports no command or file approval support. |
 | Muse Code | `@muse-code/sdk` | No | Not qualified. |
 | Grok, fx, Kiro | ACP | No | ACP agents with their own tools; not qualified. |
