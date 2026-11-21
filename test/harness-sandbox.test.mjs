@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, existsSync, writeFileSync, rmSync } from 'node:
 import { execFileSync } from 'node:child_process';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
-import { allowlistProxy, bwrapArgs, sandboxAvailable, sandboxRunDir, startSandboxed } from '../harness-sandbox.mjs';
+import { allowlistProxy, bwrapArgs, sandboxAvailable, sandboxRunDir, startSandboxed, systemMounts } from '../harness-sandbox.mjs';
 
 // The whole-process boundary for agent harnesses with their own tools. The bubblewrap case runs only where bubblewrap works (Linux).
 const temp = () => mkdtempSync(join(tmpdir(), 'bridge-sbxt-'));
@@ -16,8 +16,18 @@ const tunnel = (socket, target) => new Promise(resolve => {
   c.on('close', () => { const e = b.indexOf('\r\n\r\n'); resolve({ status: b.split(' ')[1] ?? 'closed', body: e >= 0 ? b.slice(e + 4) : '' }); });
 });
 
+test('the system part of the allowlist binds /usr and /etc read-only, recreates merged-usr links as links, and binds a real top-level directory read-only, never writable', () => {
+  const merged = systemMounts({ exists: p => ['/bin', '/lib'].includes(p), lstat: () => ({ isSymbolicLink: () => true }), readlink: p => 'usr' + p });
+  assert.deepEqual(merged, ['--ro-bind', '/usr', '/usr', '--ro-bind', '/etc', '/etc', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib']);
+  const split = systemMounts({ exists: p => ['/bin', '/sbin'].includes(p), lstat: () => ({ isSymbolicLink: () => false }), readlink: () => { throw new Error('not a link'); } });
+  assert.deepEqual(split, ['--ro-bind', '/usr', '/usr', '--ro-bind', '/etc', '/etc', '--ro-bind', '/bin', '/bin', '--ro-bind', '/sbin', '/sbin']);
+  for (const args of [merged, split]) assert.ok(!args.includes('--bind'), 'nothing of the system is writable');
+});
+
 test('the boundary never makes the workspace writable: it is bound read-only after the private /tmp, and a writable directory containing it is refused', () => {
-  const args = bwrapArgs({ readable: ['/opt/agy'], writable: ['/state'], runDir: '/run/x', cwd: '/work/repo', env: { PATH: '/bin' } });
+  // The system set is the merged-usr layout bubblewrap runs on, given explicitly (the host running the test may be a Mac, where /bin is a directory).
+  const system = systemMounts({ exists: p => ['/bin', '/sbin', '/lib', '/lib64'].includes(p), lstat: () => ({ isSymbolicLink: () => true }), readlink: p => 'usr' + p });
+  const args = bwrapArgs({ readable: ['/opt/agy'], writable: ['/state'], runDir: '/run/x', cwd: '/work/repo', env: { PATH: '/bin' }, system });
   const at = (flag, path) => args.findIndex((a, i) => a === flag && args[i + 1] === path);
   assert.equal(at('--ro-bind', '/'), -1, 'the root is never mounted whole: only an allowlist');
   const mounted = args.flatMap((a, i) => ['--ro-bind', '--bind'].includes(a) ? [args[i + 1]] : []);
