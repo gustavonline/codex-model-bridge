@@ -127,3 +127,9 @@ test('agy answering "signed in" without saving a login the sessions can read is 
   await auth.begin(a.agy, elsewhere); await until(() => !['starting', 'waiting'].includes(auth.status(elsewhere).phase), 'the answer');
   assert.deepEqual([auth.status(elsewhere).phase, auth.status(elsewhere).error, auth.status(elsewhere).saved], ['failed', 'auth_not_usable', false]);
 });
+
+test('a Bridge-owned agy profile is agy\'s own --gemini-dir, absolute only', () => {
+  assert.deepEqual(antigravityLaunch({ executable: '/opt/agy', logDir: '/run/x', env: {}, profile: '/state/antigravity-profile' }).args.slice(-2), ['--gemini-dir', '/state/antigravity-profile']);
+  assert.ok(!antigravityLaunch({ executable: '/opt/agy', logDir: '/run/x', env: {} }).args.includes('--gemini-dir'), 'none unless asked');
+  assert.throws(() => antigravityLaunch({ executable: '/opt/agy', logDir: '/run/x', env: {}, profile: 'relative' }), { code: 'route_invalid' });
+});

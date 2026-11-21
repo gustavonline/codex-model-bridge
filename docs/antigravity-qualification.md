@@ -74,6 +74,20 @@ The account's model list is read by a short probe that belongs to no chat: it ge
 
 These sign-in rows are Linux measurements.
 
+**Where a sandboxed session's login can come from (macOS open).** `scripts/qualify-antigravity-auth.mjs` runs the deciding checks without any prompt or model call:
+- **`a`:** agy's sign-in starts inside the boundary on a Bridge-owned `--gemini-dir`; the authorization URL is captured and checked, and the host probes agy's callback. With `--wait`, the person completes the sign-in and the new profile files are listed, by name and size only.
+- **`a4`:** a fresh sandboxed launch on that profile authenticates and lists the catalog.
+- **`c1` and `c4`:** the same outside the boundary, on the owner's login and on a fresh profile.
+
+On Linux (bubblewrap):
+- `a` captures a valid `localhost` authorization inside the boundary.
+- The host cannot reach agy's listener in bubblewrap's private network, so on Linux the sign-in stays outside the boundary.
+- `a4` on a fresh profile is signed out.
+- `c1` lists 6 models on the owner's login.
+- `c4` is signed out (the login is keyed per profile).
+
+On macOS these steps decide between a Bridge-owned profile signed in inside Codex's sandbox (where agy's Keychain write fails and it falls back to its file storage) and running agy outside the sandbox in full-access chats.
+
 Still not done:
 - a live macOS Gemini turn: no sandboxed session on the Mac has a usable login yet (agy's Mac login is in the Keychain);
 - Home's sign-in has never completed end to end with a real Google account; on macOS neither the opener interception nor where the login is stored has been proven;

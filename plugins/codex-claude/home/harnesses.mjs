@@ -123,9 +123,10 @@ export function harnessRefusal(route) {
 const passed = ['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL', 'TZ'];
 // `interactive` is only Home's sign-in: there agy may open a browser. Every other launch (a chat's session, the catalog probe, a sign-in check)
 // carries the remote marker, so a signed-out agy refuses at once ("No browser is available here") and never opens a browser or waits.
-export function antigravityLaunch({ executable, logDir, env = process.env, interactive = false }) {
-  if (!isAbsolute(executable ?? '') || !isAbsolute(logDir ?? '')) throw Object.assign(new Error('Antigravity needs an absolute executable and log directory'), { code: 'route_invalid' });
+// `profile` (absolute) is agy's own --gemini-dir: its state, config and login live there instead of $HOME/.gemini (measured on 1.5.13).
+export function antigravityLaunch({ executable, logDir, env = process.env, interactive = false, profile = null }) {
+  if (!isAbsolute(executable ?? '') || !isAbsolute(logDir ?? '') || (profile !== null && !isAbsolute(profile))) throw Object.assign(new Error('Antigravity needs an absolute executable and log directory'), { code: 'route_invalid' });
   const kept = Object.fromEntries(passed.filter(k => typeof env[k] === 'string').map(k => [k, env[k]]));
-  return { command: executable, args: ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(logDir, 'acp-server.log')], authMethod: 'oauth-personal',
+  return { command: executable, args: ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(logDir, 'acp-server.log'), ...(profile ? ['--gemini-dir', profile] : [])], authMethod: 'oauth-personal',
     env: { ...kept, AGY_CLI_DISABLE_AUTO_UPDATE: '1', ...(interactive ? {} : { SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0' }) } };
 }
