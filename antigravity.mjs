@@ -65,7 +65,10 @@ export function acpClient(child, { onRequest, onNotification, maxLine = 8 * 1024
 export const mcpRelay = fileURLToPath(new URL('./harness-mcp-relay.mjs', import.meta.url));
 // Opens one Antigravity session. `mcpServe(stream)` serves Bridge's Codex MCP tools on one relayed connection; `codexTools` are their names; `onEvent`
 // receives { type: 'text', text } | { type: 'tool', id, title, status } | { type: 'permission', title, allowed }. `start` is injectable for tests.
-export async function open({ executable, cwd, home, agentName, mcpServe, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume', localBinding = false, stateRoot = null }) {
+export async function open({ executable, cwd, home, agentName, mcpServe, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume', localBinding = false, stateRoot = null, signal = null }) {
+  // `signal` ends the start at once (Stop, or a lost grant): agy's whole tree is closed and nothing is sent; the caller sees harness_aborted.
+  const aborted = () => Object.assign(new Error('The Antigravity start was stopped'), { code: 'harness_aborted' });
+  if (signal?.aborted) throw aborted();
   if (!(await available())) fail('harness_boundary_unavailable', 'Antigravity needs Model Bridge\'s process sandbox, which is not available on this system, so nothing was started.');
   const runDir = sandboxRunDir(), mcpSocket = join(runDir, 'mcp.sock'), http = createServer(stream => { stream.on('error', () => {}); Promise.resolve(mcpServe(stream)).catch(() => stream.destroy()); });
   await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
@@ -78,7 +81,10 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
   let box;
   try { box = await start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd: agyCwd, env: spec.env, readable: [mcpRelay], writable: [join(home, '.gemini')], allow: googleEndpoints, runDir, mcpSocket, localBinding, ...(stateRoot ? { stateRoot } : {}) }); }
   catch (error) { http.close(); rmSync(agyCwd, { recursive: true, force: true }); throw error; }
-  let sessionId = null;
+  let sessionId = null, stopStart = null;
+  const stopped = new Promise((_, reject) => { stopStart = () => reject(aborted()); }); stopped.catch(() => {});
+  const step = promise => signal ? Promise.race([promise, stopped]) : promise;
+  signal?.addEventListener('abort', stopStart, { once: true });
   const acp = acpClient(box.child, {
     onRequest: async (method, params) => {
       if (method !== 'session/request_permission' || params?.sessionId !== sessionId) throw new Error('unsupported');
@@ -94,13 +100,16 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
   });
   const close = async () => { const r = await box.close(); http.close(); rmSync(agyCwd, { recursive: true, force: true }); return r; };
   try {
-    await acp.request('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'model-bridge', version: '0.3.0' } });
-    await acp.request('authenticate', { methodId: spec.authMethod });
+    if (signal?.aborted) throw aborted();
+    await step(acp.request('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'model-bridge', version: '0.3.0' } }));
+    await step(acp.request('authenticate', { methodId: spec.authMethod }));
     // A follow-up turn continues the chat's own agy session (resume: no history replay); a new chat gets a new session.
     const mcpServers = [{ name: 'codex', command: process.execPath, args: [mcpRelay, mcpSocket], env: [] }];
     if (resume) sessionId = resume;
-    const session = resume ? { sessionId: resume, ...(await acp.request(resumeMethod, { sessionId: resume, cwd: agyCwd, mcpServers })) } : await acp.request('session/new', { cwd: agyCwd, mcpServers });
-    sessionId = session.sessionId;
+    // Only agy's own refusal of THIS session is reported as harness_resume_failed (the caller may start afresh); any other failure is itself.
+    const resumed = resume ? await step(acp.request(resumeMethod, { sessionId: resume, cwd: agyCwd, mcpServers })).catch(error => { throw error.code === 'harness_error' ? Object.assign(error, { code: 'harness_resume_failed' }) : error; }) : null;
+    const session = resume ? { sessionId: resume, ...resumed } : await step(acp.request('session/new', { cwd: agyCwd, mcpServers }));
+    sessionId = session.sessionId; signal?.removeEventListener('abort', stopStart);
     return {
       sessionId, catalog: catalogOf(session), decisions: box.decisions,
       // Model and thinking level are chosen from the session's own options; anything else is refused before it is sent.
@@ -117,5 +126,5 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
       cancel: () => acp.notify('session/cancel', { sessionId }),
       close,
     };
-  } catch (error) { await close(); throw error; }
+  } catch (error) { signal?.removeEventListener('abort', stopStart); await close(); throw error; }
 }

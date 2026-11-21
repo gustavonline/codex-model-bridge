@@ -1153,13 +1153,22 @@ export class Bridge {
         // Antigravity, where it is qualified (Linux with the process boundary, agy found, its catalog loaded): a new chat on one of its models, or
         // a request on that chat naming its own model (no change). Every other use of a harness route is refused before anything sees it.
         const route = parseHarnessModelId(asked), own = this.records.get(params.threadId);
-        // Turned off (or not qualified here) means no new chat now, even with a catalog still cached from before.
-        const ready = route?.harness === 'antigravity' && !!this.antigravityRuntime() && (await this.antigravityCatalog()).models.some(m => m.id === asked);
+        // An existing Antigravity chat naming its own model is no change: it passes whatever Antigravity's state now (a reopen keeps its history;
+        // a turn then says why it cannot run). A new chat needs it on, qualified here and its catalog loaded, even with a catalog cached from before.
+        if (method !== 'thread/start' && own?.provider === 'antigravity' && own.model === asked) {
+          params = { ...params }; delete params.model;
+          if (params.collaborationMode?.settings) params.collaborationMode = { ...params.collaborationMode, settings: { ...params.collaborationMode.settings, model: own.model } };
+        } else {
+        const runtime = route?.harness === 'antigravity' ? this.antigravityRuntime() : null, catalog = runtime ? await this.antigravityCatalog() : null;
+        const ready = !!catalog?.models.some(m => m.id === asked);
         if (ready && method === 'thread/start' && params.approvalsReviewer != null && params.approvalsReviewer !== 'user')
           throw new RpcError('Approval requests in Model Bridge chats can only be reviewed by the user; automatic approval review is not implemented.', -32602);
         if (ready && method === 'thread/start') return this.startAntigravity(params, asked);
-        if (ready && own?.provider === 'antigravity' && own.model === asked) { params = { ...params }; delete params.model; if (params.collaborationMode?.settings) params.collaborationMode = { ...params.collaborationMode, settings: { ...params.collaborationMode.settings, model: own.model } }; }
-        else throw new RpcError(route?.harness === 'antigravity' && ready ? 'An Antigravity chat keeps its model; start a new chat to use another one. Nothing was changed.' : harnessRefusal(route ?? { harness: null }).message, -32602);
+        if (route?.harness !== 'antigravity') throw new RpcError(harnessRefusal(route ?? { harness: null }).message, -32602);
+        if (ready) throw new RpcError('An Antigravity chat keeps its model; start a new chat to use another one. Nothing was changed.', -32602);
+        throw new RpcError(!runtime ? this.antigravityUnavailable() : catalog.models.length ? 'This Gemini model is not in your Antigravity account\'s current catalog; nothing was started.'
+          : `Gemini (Antigravity) could not list your account's models (${String(catalog.reason ?? 'unknown').slice(0, 60)}); nothing was started.`, -32602);
+        }
       }
     }
     // An Antigravity chat keeps its runtime and model: any other model named on it is refused here, before a router could read it as a switch.
@@ -1839,7 +1848,7 @@ export class Bridge {
     }
   }
 
-  // ---- Antigravity chats (antigravity.mjs inside harness-sandbox.mjs; Linux only) ------------------------------------------------------------
+  // ---- Antigravity chats (antigravity.mjs inside harness-sandbox.mjs: bubblewrap on Linux; Codex's sandbox on macOS, a candidate) ------------------------------------------------------------
   // The same Bridge core as a Claude chat (native host thread, history, queue, session tools, mailbox, permissions); only the runtime differs.
   // Qualified only where the whole-process boundary works, agy is found and its signed-in catalog loads; the catalog is the account's own.
     // Antigravity runs only when enabled: Home's persisted choice in the connection store (the resolved runtime path), or BRIDGE_AGY for development.
@@ -1848,6 +1857,16 @@ export class Bridge {
     const chosen = process.env.BRIDGE_AGY ?? (this.connectionRoot ? readHarnessSettings(this.connectionRoot).antigravity : null)?.executable;
     const enabled = process.env.BRIDGE_AGY ? true : this.connectionRoot && readHarnessSettings(this.connectionRoot).antigravity?.enabled === true;
     return enabled && chosen && findExecutable(chosen) ? { executable: findExecutable(chosen), home: process.env.HOME } : null;
+  }
+  // Why Antigravity cannot run now, in the person's terms (only when antigravityRuntime() is null).
+  antigravityUnavailable() {
+    const platform = this.platform ?? process.platform, h = harness('antigravity');
+    if (!boundarySupported(h, platform)) return platform === 'darwin' && h.boundary.includes('darwin')
+      ? 'Gemini (Antigravity) has not passed its macOS qualification yet, so it does not run on this Mac; nothing was sent. An existing Gemini chat keeps its history.'
+      : harnessRefusal({ harness: 'antigravity' }).message;
+    const settings = this.connectionRoot ? readHarnessSettings(this.connectionRoot).antigravity : null;
+    if (!process.env.BRIDGE_AGY && settings?.enabled !== true) return 'Gemini (Antigravity) is turned off in Model Bridge Home, so nothing was sent. Turn it on there to use it; an existing Gemini chat keeps its history.';
+    return 'Antigravity (agy) is no longer found on this system; nothing was sent. Reinstall it, or turn Gemini (Antigravity) on again in Home.';
   }
   antigravityAgent(home) {
     // The MCP-only main agent, under a per-install name so no workspace can shadow it, in agy's own config (never a workspace).
@@ -1863,12 +1882,14 @@ export class Bridge {
     if (!refresh && this.agyCatalog) return this.agyCatalog;
     const pending = (async () => {
       const runtime = this.antigravityRuntime();
-      if (!runtime || !(await sandboxAvailable())) return { models: [], levels: [], reason: runtime ? 'boundary_unavailable' : 'runtime_not_found' };
+      if (!runtime) return { models: [], levels: [], reason: 'runtime_not_found' };
+      // The catalog probe belongs to no chat (it may be asked for from any chat's model list, and gets no prompt and no tools). On macOS agy's
+      // local listener is granted to it only with the person's consent from Home's Turn on; without it nothing starts, not even the canary.
+      const mac = (this.platform ?? process.platform) === 'darwin', consent = process.env.BRIDGE_AGY ? true : readHarnessSettings(this.connectionRoot ?? '').antigravity?.localListener === true;
+      if (mac && !consent) return { models: [], levels: [], reason: 'local_listener_consent_required' };
+      if (!(await sandboxAvailable())) return { models: [], levels: [], reason: 'boundary_unavailable' };
       const cwd = mkdtempSync(join(tmpdir(), 'bridge-agy-catalog-'));
       try {
-        // The catalog probe belongs to no chat. On macOS agy's local listener is granted here only with the person's consent from Home's Turn on.
-        const mac = (this.platform ?? process.platform) === 'darwin', consent = process.env.BRIDGE_AGY ? true : readHarnessSettings(this.connectionRoot ?? '').antigravity?.localListener === true;
-        if (mac && !consent) return { models: [], levels: [], reason: 'local_listener_consent_required' };
         const session = await openAntigravity({ ...runtime, cwd, agentName: this.antigravityAgent(runtime.home), mcpServe: stream => stream.destroy(), codexTools: new Set(), localBinding: mac, stateRoot: join(this.statePath, 'codex-sandbox') });
         try { return { models: session.catalog.models.map(m => ({ id: harnessModelId('antigravity', 'google', m.id), model: m.id, name: m.name })), levels: session.catalog.levels }; }
         finally { await session.close(); }
@@ -1898,6 +1919,7 @@ export class Bridge {
   }
   async prepareAntigravityTurn(record, params, admit) {
     if (params.input.some(p => p.type !== 'text')) throw new RpcError('This Antigravity chat accepts text messages in Model Bridge; nothing was sent.', -32602);
+    if (!this.antigravityRuntime()) throw new RpcError(this.antigravityUnavailable(), -32602);
     this.checkWorkspace(record, params);
     await this.ensureLoaded(record);
     await this.updatePermissions(record, params);
@@ -1910,13 +1932,14 @@ export class Bridge {
       const { levels } = await this.antigravityCatalog();
       if (!levels.includes(level)) throw new RpcError(`Unsupported effort ${level} for this Antigravity model`, -32602);
     }
+    const context = antigravityContext(params.additionalContext); // a malformed context is refused here, before the turn exists or agy starts
     admit?.();
     if (level != null) record.effort = level;
     if (params.approvalPolicy) record.approvalPolicy = params.approvalPolicy;
     const turn = { id: randomUUID(), status: 'inProgress', startedAt: now(), completedAt: null, error: null,
       items: [{ id: params.clientUserMessageId ?? randomUUID(), type: 'userMessage', content: params.input }], itemsView: 'full', provider: 'antigravity' };
     const running = { turn, model: record.model, controller: new AbortController(), query: null, steeringInput: messageStream(), historyScope: this.sdkScopeKey(record), notice: null };
-    running.acceptingSteering = false;
+    running.acceptingSteering = false; running.context = context;
     const queued = acceptQueued(record, params, turn);
     record.turns.push(turn); record.updatedAt = now();
     record.thread.preview ||= params.input.map(p => p.text).join(' ').slice(0, 200);
@@ -1953,7 +1976,7 @@ export class Bridge {
         await this.native.request('thread/inject_items', { threadId, items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: '[Bridge tool host. Conversation is supplied when needed.]' }] }] }, 60_000, controller.signal);
         record.nativePersisted = true; this.save(record);
       }
-      const runtime = this.antigravityRuntime(); if (!runtime) throw new Error('Antigravity (agy) is no longer found on this system; nothing was sent.');
+      const runtime = this.antigravityRuntime(); if (!runtime) throw new Error(this.antigravityUnavailable());
       // The grant is decided again immediately before agy starts (permissions may have changed since the turn was accepted).
       const platform = this.platform ?? process.platform;
       if (!antigravityLocalBindingAllowed(platform, record)) throw new Error('This chat no longer has full access, which Gemini (Antigravity) needs on this Mac; nothing was sent.');
@@ -1966,7 +1989,7 @@ export class Bridge {
       running.query = { close: () => session?.cancel(), exited: async () => ({ state: 'none' }) };
       const opener = this.antigravityOpen ?? openAntigravity, options = { ...runtime, cwd: record.thread.cwd, agentName: this.antigravityAgent(runtime.home), mcpServe,
         codexTools: new Set(['find_tools', 'call_tool', 'find_skills', 'read_skill', 'shell', 'read_history']), localBinding: running.localBinding,
-        stateRoot: join(this.statePath, 'codex-sandbox'),
+        stateRoot: join(this.statePath, 'codex-sandbox'), signal: controller.signal,
         onEvent: event => {
           if (event.type !== 'text' || running.finished) return;
           if (!text) { text = { id: randomUUID(), type: 'agentMessage', text: '', phase: null }; item('started', text); }
@@ -1976,7 +1999,7 @@ export class Bridge {
       try { session = await opener({ ...options, resume: record.acpSessionId }); }
       catch (error) {
         // A session agy can no longer resume is dropped once, and a fresh one starts with the visible history as reference (never a silent loop).
-        if (!record.acpSessionId || error.code !== 'harness_error' || controller.signal.aborted) throw error;
+        if (!record.acpSessionId || error.code !== 'harness_resume_failed' || controller.signal.aborted) throw error;
         this.log('antigravity.resume_failed', { threadId, ...errorMetadata(error) });
         record.acpSessionId = null; record.agyInstructed = false; this.save(record); fresh = true;
         session = await opener({ ...options, resume: null });
@@ -1991,8 +2014,7 @@ export class Bridge {
       const prompt = params.input.map(p => p.text).join('\n');
       const earlier = fresh && record.turns.length > 1 ? record.turns.slice(0, -1) : [];
       const preamble = !record.agyInstructed || fresh ? antigravityPreamble(record, projectInstructions(record), earlier) + '\n\n' : '';
-      const context = antigravityContext(params.additionalContext);
-      const result = await session.prompt(preamble + context + prompt);
+      const result = await session.prompt(preamble + running.context + prompt);
       record.agyInstructed = true; this.save(record);
       controller.signal.removeEventListener('abort', onAbort); clearTimeout(stopTimer);
       if (text) item('completed', text);

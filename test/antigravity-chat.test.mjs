@@ -11,6 +11,7 @@ const MODEL = harnessModelId('antigravity', 'google', 'gemini-x');
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function agy(f, { hold } = {}) {
   const opened = [], cancelled = [];
+  f.bridge.platform = 'linux'; // the platform under test is explicit (a macOS test sets darwin after this), never the host's
   f.bridge.antigravityCatalog = async () => ({ models: [{ id: MODEL, model: 'gemini-x', name: 'Gemini X' }], levels: ['low', 'high'] });
   f.bridge.antigravityRuntime = () => ({ executable: '/opt/agy', home: '/home/x' });
   f.bridge.antigravityAgent = () => 'bridge-mcp-000000000000';
@@ -97,6 +98,8 @@ test('Gemini models join the same library and saved slots: a saved one is offere
   const OTHER = harnessModelId('antigravity', 'google', 'gemini-y'), ready = { models: [{ id: MODEL, model: 'gemini-x', name: 'Gemini X' }, { id: OTHER, model: 'gemini-y', name: 'Gemini Y' }], levels: ['low', 'high'] };
   const on = b => { b.agyCatalogReady = ready; b.antigravityRuntime = () => ({ executable: '/opt/agy', home: '/home/x' }); };
   const f = fixture('openai', { connectionRoot: p.state }); on(f.bridge);
+  // Home's card reads the host platform: on a Mac host the qualification switch stands in for Linux's boundary.
+  const candidate = process.env.BRIDGE_ANTIGRAVITY_MAC; process.env.BRIDGE_ANTIGRAVITY_MAC = '1';
   try {
     await f.bridge.request('model/list', {});
     const catalog = registry.pickerCatalog(), agy = catalog.models.filter(m => m.kind === 'antigravity');
@@ -116,7 +119,7 @@ test('Gemini models join the same library and saved slots: a saved one is offere
     assert.deepEqual([card().enabled, card().catalogState, card().models.every(m => m.available === false)], [false, 'stale', true]);
     setHarnessEnabled(p.state, 'antigravity', true, { platform: 'linux', find: () => process.execPath });
     assert.equal(card().enabled, true); assert.ok(!providerControls(p.bindingPath).snapshot().harnesses.some(h => h.id === 'antigravity'), 'no second row while it is a connected card');
-  } finally { f.close(); }
+  } finally { if (candidate === undefined) delete process.env.BRIDGE_ANTIGRAVITY_MAC; else process.env.BRIDGE_ANTIGRAVITY_MAC = candidate; f.close(); }
 });
 
 test('on macOS a Gemini turn runs only in a full-access chat (agy needs a local listener); any other chat is refused and never widened', async () => {
@@ -222,7 +225,7 @@ test('a session agy cannot resume is replaced once by a fresh one that carries t
   const f = fixture(), a = agy(f), prompts = []; let failNext = true, refuseResume = false;
   const open = f.bridge.antigravityOpen;
   f.bridge.antigravityOpen = async opts => {
-    if (opts.resume && refuseResume) { refuseResume = false; a.opened.push({ resume: opts.resume, refused: true }); throw Object.assign(new Error('session not found'), { code: 'harness_error' }); }
+    if (opts.resume && refuseResume) { refuseResume = false; a.opened.push({ resume: opts.resume, refused: true }); throw Object.assign(new Error('session not found'), { code: 'harness_resume_failed' }); }
     const s = await open(opts);
     return { ...s, prompt: async t => { prompts.push(t); if (failNext) { failNext = false; throw new Error('network went away'); } return s.prompt(t); } };
   };
@@ -247,5 +250,32 @@ test('a new Antigravity chat refuses automatic approval review, like any Model B
     await assert.rejects(f.bridge.request('thread/start', { model: MODEL, cwd: f.statePath, approvalsReviewer: 'auto_review' }), /reviewed by the user/);
     assert.equal(f.bridge.records.size, 0);
     assert.ok(f.bridge.records.get(await (async () => (await f.bridge.request('thread/start', { model: MODEL, cwd: f.statePath, approvalsReviewer: 'user' })).thread.id)()));
+  } finally { f.close(); }
+});
+
+test('an existing Gemini chat reopens on its own model while Antigravity is off or its catalog fails; a turn then says why and records nothing', async () => {
+  const f = fixture(), a = agy(f); try {
+    const id = await start(f), one = (await f.send(id, 'first')).turn; await f.done(one.id);
+    f.restart(); agy(f); f.bridge.antigravityCatalog = async () => ({ models: [], levels: [], reason: 'catalog_failed' });
+    assert.equal((await f.bridge.request('thread/resume', { threadId: id, model: MODEL })).thread.id, id, 'catalog failed: it still opens');
+    f.restart(); agy(f); f.bridge.antigravityRuntime = () => null; f.bridge.antigravityUnavailable = () => 'Gemini (Antigravity) is turned off in Model Bridge Home, so nothing was sent.';
+    assert.equal((await f.bridge.request('thread/resume', { threadId: id, model: MODEL })).thread.id, id, 'turned off: it still opens');
+    assert.equal(f.bridge.records.get(id).turns.length, 1, 'with its history');
+    await assert.rejects(f.send(id, 'second'), /turned off in Model Bridge Home/);
+    assert.deepEqual([f.bridge.records.get(id).turns.length, a.opened.length], [1, 1], 'no turn recorded, no agy started');
+    await assert.rejects(f.bridge.request('thread/resume', { threadId: id, model: 'gpt-test' }), /keeps its model/);
+  } finally { f.close(); }
+});
+
+test('creating a Gemini child while Antigravity is turned off is a definite refusal: a retry gets the same answer, never "uncertain"', async () => {
+  const f = fixture('openai', { coordinateNative: true }); agy(f); try {
+    const parent = (await f.bridge.request('thread/start', { cwd: f.statePath })).thread.id;
+    await f.bridge.nativeNotification('turn/started', { threadId: parent, turn: { id: 'p1', status: 'inProgress' } });
+    f.bridge.antigravityRuntime = () => null; // turned off after its catalog was cached
+    const create = async () => { const r = await f.bridge.toolRequest('item/tool/call', { namespace: sessionNamespace, threadId: parent, turnId: 'p1', callId: randomUUID(), tool: 'manage',
+      arguments: { operation: 'create', model: 'antigravity/gemini-x', text: 'hello', requestId: 'agy-off-child-01' } }); return r.contentItems[0].text; };
+    const first = await create(), again = await create();
+    assert.match(first, /turned off in Model Bridge Home|not available|has not passed/); assert.equal(again, first, 'the same refusal');
+    assert.doesNotMatch(again, /uncertain/); assert.equal([...f.bridge.records.values()].filter(r => r.provider === 'antigravity').length, 0);
   } finally { f.close(); }
 });

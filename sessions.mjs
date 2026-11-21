@@ -399,7 +399,9 @@ async function create(bridge, caller, args, signal, turnId) {
   signal?.throwIfAborted();
   // A policy change during approval is a definite refusal: checked here, with no await before the
   // reservation, so no receipt is left behind that a retry would take for an uncertain outcome.
-  const denied = harness === 'antigravity' ? null : bridge.claudeDenied({ model: chosen.value }); if (denied) throw denied;
+  // For Antigravity that is Home's Turn off (or a platform where it is not offered), read synchronously like Claude's policy.
+  const denied = harness === 'antigravity' ? (bridge.antigravityRuntime() ? null : new RpcError(bridge.antigravityUnavailable(), -32602)) : bridge.claudeDenied({ model: chosen.value });
+  if (denied) throw denied;
   if (!reserveReceipt(key, reservation)) {
     const other = prior(); if (other) return deliver(await other);
     throw new RpcError('Previous create outcome is uncertain; inspect the session list before any new request', -32602);

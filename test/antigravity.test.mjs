@@ -89,3 +89,29 @@ test('the permission answer and catalog parsing are total over odd input; the ag
   assert.deepEqual(catalogOf(null), { models: [], levels: [], current: { model: null, level: null } });
   assert.match(agentDefinition('bridge-mcp-1'), /\ntools: \[\]\n/); assert.match(agentDefinition('bridge-mcp-1'), /\nmainAgent: true\n/);
 });
+
+// A scripted agent answering `initialize` and then as `script` says ('silent' never answers; an error object answers with that error).
+const scripted = script => async () => {
+  const code = `const rl = require('node:readline').createInterface({ input: process.stdin }); const s = ${JSON.stringify(script)};
+rl.on('line', line => { const m = JSON.parse(line); const a = m.method === 'initialize' ? { result: { protocolVersion: 1 } } : s[m.method];
+  if (a && a !== 'silent') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, ...a }) + '\\n'); }); rl.on('close', () => process.exit(0));`;
+  const child = spawn(process.execPath, ['-e', code], { stdio: ['pipe', 'pipe', 'pipe'] }), box = { closed: false };
+  return Object.assign(box, { child, decisions: [], close: async () => { child.stdin.end(); await new Promise(r => child.exitCode !== null ? r() : child.once('exit', r)); box.closed = true; return { state: 'exited' }; } });
+};
+
+test('Stop while agy is still starting ends the start at once and closes its whole tree; nothing is sent', async () => {
+  let box; const start = async o => (box = await scripted({ authenticate: 'silent' })(o));
+  const stop = new AbortController(), began = Date.now();
+  const opening = open({ ...base({ start }), signal: stop.signal });
+  setTimeout(() => stop.abort(), 100);
+  await assert.rejects(opening, { code: 'harness_aborted' });
+  assert.ok(Date.now() - began < 3000, 'not after the 120 s request bound'); assert.equal(box.closed, true);
+  await assert.rejects(open({ ...base({ start }), signal: AbortSignal.abort() }), { code: 'harness_aborted' }, 'an already stopped start never starts');
+});
+
+test('only agy refusing the resumed session itself is reported as a failed resume; a sign-in error stays a sign-in error', async () => {
+  const refused = scripted({ authenticate: { result: {} }, 'session/resume': { error: { code: -32002, message: 'Session not found' } } });
+  await assert.rejects(open({ ...base({ start: refused }), resume: 'old-session' }), { code: 'harness_resume_failed' });
+  const signedOut = scripted({ authenticate: { error: { code: -32000, message: 'Authentication required' } } });
+  await assert.rejects(open({ ...base({ start: signedOut }), resume: 'old-session' }), { code: 'harness_error' });
+});

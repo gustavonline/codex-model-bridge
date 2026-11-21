@@ -113,8 +113,8 @@ export function harnessRefusal(route) {
   return Object.assign(new Error(`${h ? h.label : 'This harness'} is not available in Model Bridge yet, so nothing was sent. ${h?.reason ?? ''}`.trim()), { code: 'harness_not_qualified' });
 }
 
-// Prepared launch for Antigravity's official ACP server (`agy acp`, flags verified on 1.5.13). Nothing calls it: Antigravity is not qualified
-// (docs/antigravity-qualification.md). The Google-account route (oauth-personal) runs with auto-update off and file credential storage, and every
+// Prepared launch for Antigravity's official ACP server (`agy acp`, flags verified on 1.5.13), used by antigravity.mjs inside the process
+// boundary (docs/antigravity-qualification.md). The Google-account route (oauth-personal) runs with auto-update off and file credential storage, and every
 // it inherits only an explicit allowlist of the environment, so a parent shell can never switch it to API-key or Agent Platform billing.
 // It does NOT isolate the profile: on 1.5.13 the login and state live under $HOME/.gemini whatever GEMINI_HOME says (an own profile would need
 // --gemini-dir and its own sign-in). Only the server log is moved, into `logDir`. `--sandbox` is not passed: it can silently do nothing.
