@@ -74,7 +74,9 @@ The account's model list is read by a short probe that belongs to no chat: it ge
 
 These sign-in rows are Linux measurements.
 
-**Where a sandboxed session's login can come from (macOS open).** `scripts/qualify-antigravity-auth.mjs` runs the deciding checks without any prompt or model call:
+**Resolved (T3 Code #39485, docs/upstream-reference.md):** with the remote marker, agy keeps a Google sign-in in the profile's own file storage, not in the OS keyring entry it otherwise shares across every profile. Bridge therefore signs in with `agy acp --login` on its own `--gemini-dir`, with the marker, and verifies with a sandboxed catalog probe on that profile. The A1/A2 Mac result (the ACP `authenticate` loopback route reaching its listener inside Codex's sandbox) proves the URL and listener only, not isolated credentials, and is no longer the route.
+
+**Earlier qualification steps (kept for diagnosis).** `scripts/qualify-antigravity-auth.mjs` runs the deciding checks without any prompt or model call:
 - **`a`:** agy's sign-in starts inside the boundary on a Bridge-owned `--gemini-dir`; the authorization URL is captured and checked, and the host probes agy's callback. With `--wait`, the person completes the sign-in and the new profile files are listed, by name and size only.
 - **`a4`:** a fresh sandboxed launch on that profile authenticates and lists the catalog.
 - **`c1` and `c4`:** the same outside the boundary, on the owner's login and on a fresh profile.

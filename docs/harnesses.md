@@ -42,20 +42,21 @@ Once it is on, Gemini appears as a connected provider, like Claude:
 
 ### Signing in with Google
 
-**Status: proven on Linux only. The macOS route is open and not offered as working.**
+**Status:** built on T3 Code's approach (docs/upstream-reference.md, #39485) and tested with a scripted agy and with the real agy 1.5.13 up to Google's link on Linux. **Not yet completed with a real Google account on a Mac.**
 
-The Gemini card and row in Home offer **Sign in with Google** wherever agy is found and its boundary is supported. It runs agy's own sign-in, ACP `authenticate` with the Google-account method:
-- **Browser:** agy prepares Google's authorization and Home opens it with the host's own link opening (**Open browser**).
-- **Return:** Google returns to agy's own `localhost` callback, so there is no code to copy or paste. Bridge never sees a code, token or password.
-- **Refusal:** Home opens only a Google PKCE authorization that returns to `localhost`. If agy offers its paste-code page instead, the sign-in is refused.
-- **Opener coverage:** the recorder covers agy calling `open`, `xdg-open`, `sensible-browser` or `$BROWSER`. An opener called by absolute path would open the real browser directly, without Home's check.
-- **Where it runs:** outside the chat boundary, because the browser's redirect has to reach agy's listener. It runs in an empty directory with the usual environment allowlist, creates no session, runs no model and gets no tools; see SECURITY.md.
+Gemini uses Model Bridge's own agy profile (`antigravity-profile` in the connection store, agy's `--gemini-dir`). Sign-in, the catalog probe and every chat session use it, and the owner's `~/.gemini` and agy's Keychain login are never touched.
 
-Where agy keeps the login decides whether the sandboxed sessions can use it. agy 1.5.13 uses the OS keyring, and its own file storage only where there is no keyring, as on a headless Linux host. It has no setting that forces file storage: `AGY_ACP_FORCE_FILE_STORAGE` does not exist in its binary, and Bridge no longer sets it.
-- **Linux without a keyring:** the login is a file that the sandboxed sessions read. This is how the qualification VM works.
-- **macOS:** the login goes to the Keychain, which Codex's sandbox cannot reach. Measured on the Mac at f153b67: Home's sign-in reported success at once without a browser (it reused the owner's existing Keychain login), and no file was written. A sandboxed session there is signed out. The route that gives sandboxed sessions a usable login, without exporting from the Keychain or signing the owner out, is still being decided.
+Every launch carries the remote marker (`SSH_CONNECTION`). agy 1.5 otherwise keeps a Google sign-in in one OS keyring entry shared by every profile; with the marker, it keeps the sign-in in the profile's own file storage, which the sandboxed sessions read. agy has no other setting for this (`AGY_ACP_FORCE_FILE_STORAGE` does not exist in its binary).
 
-Home shows whether a file-storage login is saved. A saved login is not proof that Google still accepts it. A chat on a signed-out profile fails at once as `unauthorized`, with the Home sign-in step, because every session carries the marker that stops agy from opening a browser. Before that marker, a sandboxed turn on the Mac waited on a browser sign-in until its 120 s bound.
+Once Gemini is turned on, its card in Home offers **Sign in with Google**:
+1. **Start:** Bridge runs agy's own `agy acp --login` on that profile.
+2. **Link:** agy prints a Google link. Home opens it only if it is Google's code-flow authorization with one `state` and Antigravity's hosted page as the redirect (**Open Google sign-in**).
+3. **Code:** after approving, the person pastes the code the Antigravity page shows, or that page's full address with the same `state`, into **Code from the Antigravity page**. It is written to agy's stdin once. Home keeps it only in the page's memory until it is sent, and Bridge stores it nowhere: not on disk, in a log, in Home's state or in history.
+4. **Verifying:** when agy accepts it, Home writes a request in the connection store. Bridge then probes the catalog again **inside its sandbox** on the same profile, and Home shows the result: verified with the number of models, or why not (for example signed out there).
+
+The sign-in process runs outside the chat boundary. It needs no listener, only Google's endpoints, and runs in an empty directory with the usual environment allowlist, with no session, model or tools. A chat on a signed-out profile fails at once as `unauthorized`, with the Home sign-in step.
+
+**To check on the Mac:** whether Codex records an app tool call's arguments (the code) anywhere in its own history. The code is single-use and expires within minutes.
 
 `BRIDGE_AGY` exists for development only.
 
