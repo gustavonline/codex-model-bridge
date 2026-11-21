@@ -50,7 +50,8 @@ test('Home\'s Gemini sign-in runs agy\'s own browser sign-in: the URL agy opens 
   assert.equal(auth.status(a.home).authorizationUrl, GOOD);
   const seen = a.env();
   assert.equal(seen.env.SSH_CONNECTION, undefined, 'the one launch where agy may open a browser');
-  assert.deepEqual([seen.env.AGY_ACP_FORCE_FILE_STORAGE, seen.env.GOOGLE_API_KEY, seen.env.GEMINI_API_KEY], ['1', undefined, undefined], 'file storage, no ambient key');
+  assert.deepEqual([seen.env.AGY_CLI_DISABLE_AUTO_UPDATE, seen.env.GOOGLE_API_KEY, seen.env.GEMINI_API_KEY], ['1', undefined, undefined], 'auto-update off, no ambient key');
+  assert.equal(seen.env.AGY_ACP_FORCE_FILE_STORAGE, undefined, 'no variable agy 1.5.13 does not read');
   assert.equal(seen.args[0], 'acp'); assert.match(seen.cwd, /bridge-agy-signin-.*\/cwd$/, 'an empty generated directory, never a workspace');
   await assert.rejects(auth.begin(a.agy), { code: 'auth_in_progress' });
   a.approve(); await until(() => auth.status(a.home).phase === 'complete', 'completion');
@@ -107,4 +108,22 @@ test('Home shows Gemini sign-in where agy is found: Sign in with Google, then Op
     a.approve(); await until(() => read().controls.agyAuth.phase === 'complete', 'completion');
     v = show(); assert.match(v.text, /Sign-in complete\. Gemini models appear in the model picker/); assert.ok(v.buttons.some(b => b[0] === 'Sign in again'));
   } finally { controls.close(); if (candidate === undefined) delete process.env.BRIDGE_ANTIGRAVITY_MAC; else process.env.BRIDGE_ANTIGRAVITY_MAC = candidate; }
+});
+
+test('a sign-in that cannot launch agy reports a code Home knows, keeps Home readable, and leaves no run directory', async () => {
+  const { readdirSync } = await import('node:fs');
+  const runs = () => readdirSync(tmpdir()).filter(n => n.startsWith('bridge-agy-signin-')).length, before = runs();
+  const auth = new AntigravitySignIn({ env: { HOME: '/nonexistent-home', PATH: '/usr/bin:/bin' } });
+  await assert.rejects(auth.begin('/nonexistent/agy'), e => /^[a-z_]{1,40}$/.test(e.code));
+  assert.match(auth.status('/nonexistent-home').error, /^[a-z_]{1,40}$/); assert.equal(auth.status('/nonexistent-home').phase, 'failed');
+  assert.equal(runs(), before, 'no run directory left behind');
+});
+
+test('agy answering "signed in" without saving a login the sessions can read is not a completed sign-in (the macOS Keychain case)', async () => {
+  const a = fakeAgy(GOOD), elsewhere = mkdtempSync(join(tmpdir(), 'bridge-agy-auth-other-'));
+  // The stand-in is already signed in through its own HOME; Bridge's sessions read another home, where nothing is saved.
+  const { mkdirSync } = await import('node:fs'); mkdirSync(join(a.home, '.gemini/antigravity-cli'), { recursive: true }); writeFileSync(join(a.home, '.gemini/antigravity-cli/antigravity-oauth-token'), 'stand-in');
+  const auth = new AntigravitySignIn({ env: { HOME: a.home, PATH: '/usr/bin:/bin' } });
+  await auth.begin(a.agy, elsewhere); await until(() => !['starting', 'waiting'].includes(auth.status(elsewhere).phase), 'the answer');
+  assert.deepEqual([auth.status(elsewhere).phase, auth.status(elsewhere).error, auth.status(elsewhere).saved], ['failed', 'auth_not_usable', false]);
 });

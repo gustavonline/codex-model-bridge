@@ -127,5 +127,5 @@ export function antigravityLaunch({ executable, logDir, env = process.env, inter
   if (!isAbsolute(executable ?? '') || !isAbsolute(logDir ?? '')) throw Object.assign(new Error('Antigravity needs an absolute executable and log directory'), { code: 'route_invalid' });
   const kept = Object.fromEntries(passed.filter(k => typeof env[k] === 'string').map(k => [k, env[k]]));
   return { command: executable, args: ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(logDir, 'acp-server.log')], authMethod: 'oauth-personal',
-    env: { ...kept, AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1', ...(interactive ? {} : { SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0' }) } };
+    env: { ...kept, AGY_CLI_DISABLE_AUTO_UPDATE: '1', ...(interactive ? {} : { SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0' }) } };
 }

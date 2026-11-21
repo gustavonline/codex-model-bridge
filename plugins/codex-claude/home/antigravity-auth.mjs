@@ -1,6 +1,7 @@
 // Gemini (Antigravity) sign-in from Home, through agy's own ACP sign-in: `authenticate` with the Google-account method. On a signed-out
-// profile on this machine agy opens the browser itself, Google returns to agy's own localhost callback, and agy stores its login (file
-// storage, which the sandboxed sessions read). Bridge never sees a code, token or password and offers no paste field: the browser opener agy
+// profile on this machine agy opens the browser itself, Google returns to agy's own localhost callback, and agy stores its login where it
+// keeps it (its file storage on a host without a keyring; the OS keyring otherwise: on macOS the Keychain, which the sandbox cannot read, so
+// the macOS route is not settled; docs/harnesses.md). Bridge never sees a code, token or password and offers no paste field: the browser opener agy
 // calls is a recorder, Home opens that URL through the host's own link opening, and any URL that is not a Google authorization returning to
 // agy's localhost callback is refused.
 // The sign-in agy runs outside the chat boundary because the browser's redirect must reach its listener. It runs in an empty directory with
@@ -55,6 +56,9 @@ export class AntigravitySignIn {
   launch(executable) {
     if (!isAbsolute(executable ?? '')) throw failure('harness_runtime_not_found', 'Antigravity (agy) is not installed');
     const run = mkdtempSync(join(tmpdir(), 'bridge-agy-signin-')), bin = join(run, 'bin'), cwd = join(run, 'cwd'), url = join(run, 'url');
+    try { return this.start(executable, run, bin, cwd, url); } catch (error) { rmSync(run, { recursive: true, force: true }); throw error; }
+  }
+  start(executable, run, bin, cwd, url) {
     mkdirSync(bin); mkdirSync(cwd);
     // The opener agy calls (macOS `open`, Linux `xdg-open`, or $BROWSER) records the URL for Home; it opens nothing itself.
     const sq = s => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -70,13 +74,17 @@ export class AntigravitySignIn {
     return { child, rpc: acp(child), url, close };
   }
   // Begin a browser sign-in. Already signed in is a completed sign-in at once (agy opens nothing).
-  async begin(executable) {
+  async begin(executable, home = this.env.HOME) {
     if (this.attempt) throw failure('auth_in_progress', 'A Gemini sign-in is already in progress');
     const attempt = this.attempt = { cancelled: false };
     Object.assign(this, { phase: 'starting', authorizationUrl: null, error: null });
     let run;
     try { run = attempt.run = this.launch(executable); }
-    catch (error) { this.attempt = null; Object.assign(this, { phase: 'failed', error: error.code ?? 'auth_failed' }); throw error; }
+    catch (error) {
+      // Only codes Home knows are shown (an errno such as ENOENT would fail Home's validator and blank its controls).
+      this.attempt = null; Object.assign(this, { phase: 'failed', error: error.code === 'harness_runtime_not_found' ? error.code : 'auth_failed' });
+      throw Object.assign(new Error(error.message), { code: this.error });
+    }
     const watch = setInterval(() => {
       let found; try { found = readFileSync(run.url, 'utf8'); } catch { return; }
       if (attempt.url === found) return; attempt.url = found;
@@ -92,7 +100,9 @@ export class AntigravitySignIn {
       try {
         await run.rpc('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'model-bridge', version: '0.3.0' } }, 30_000);
         await run.rpc('authenticate', { methodId: 'oauth-personal' }, this.ttlMs);
-        await finish(attempt.cancelled ? 'cancelled' : 'complete');
+        // agy's answer alone is not a usable sign-in: on macOS it reuses a Keychain login the sandboxed sessions cannot read (measured). Complete
+        // only when the login Bridge's sessions read was saved.
+        await finish(attempt.cancelled ? 'cancelled' : this.saved(home) ? 'complete' : 'failed', attempt.cancelled || this.saved(home) ? null : 'auth_not_usable');
       } catch (error) {
         await finish(attempt.cancelled ? 'cancelled' : attempt.refused ? 'failed' : error.code === 'auth_timeout' ? 'expired' : 'failed',
           attempt.cancelled ? null : attempt.refused ? 'auth_unsupported_flow' : error.code === 'auth_timeout' ? null : 'auth_failed');
@@ -101,7 +111,7 @@ export class AntigravitySignIn {
     return this.status();
   }
   cancel() { const attempt = this.attempt; if (!attempt) return this.status(); attempt.cancelled = true; attempt.run?.close(); return this.status(); }
-  // Whether a file-storage login is saved where Bridge's sessions read it (agy 1.5's own file, never read here). A saved login is not
+  // Whether a file-storage login is saved where Bridge's sandboxed sessions can read it (agy 1.5's own file, never read here). A saved login is not
   // proof it still works: a chat's turn says so if Google refuses it.
   saved(home) { try { const s = statSync(join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token')); return s.isFile() && s.size > 0; } catch { return false; } }
 }

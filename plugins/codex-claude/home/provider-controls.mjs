@@ -111,7 +111,7 @@ export function providerControls(path, { request, secrets, authOptions = {}, agy
       if (action === 'harness_sign_in') {
         if (args.harness !== 'antigravity' || !boundarySupported(harness('antigravity'))) fail('harness_not_qualified');
         const executable = agyExecutable(); if (!executable) fail('harness_runtime_not_found');
-        await agyAuth.begin(executable); guard(); return snapshot();
+        await agyAuth.begin(executable, home); guard(); return snapshot();
       }
       if (action === 'harness_sign_in_cancel') { if (args.harness !== 'antigravity') fail('invalid_request'); agyAuth.cancel(); return snapshot(); }
       if (action === 'connect') focus = registry.create({ name: args.name, baseUrl: args.baseUrl, authRef: args.authRef });

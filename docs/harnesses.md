@@ -42,16 +42,20 @@ Once it is on, Gemini appears as a connected provider, like Claude:
 
 ### Signing in with Google
 
+**Status: proven on Linux only. The macOS route is open and not offered as working.**
+
 The Gemini card and row in Home offer **Sign in with Google** wherever agy is found and its boundary is supported. It runs agy's own sign-in, ACP `authenticate` with the Google-account method:
 - **Browser:** agy prepares Google's authorization and Home opens it with the host's own link opening (**Open browser**).
 - **Return:** Google returns to agy's own `localhost` callback, so there is no code to copy or paste. Bridge never sees a code, token or password.
-- **Storage:** agy keeps the login in its file storage (`AGY_ACP_FORCE_FILE_STORAGE=1`), which is what the sandboxed sessions read.
-- **Refusal:** Home opens only a Google PKCE authorization that returns to `localhost`. If agy ever offers its paste-code page instead, the sign-in is refused and says so.
+- **Refusal:** Home opens only a Google PKCE authorization that returns to `localhost`. If agy offers its paste-code page instead, the sign-in is refused.
+- **Opener coverage:** the recorder covers agy calling `open`, `xdg-open`, `sensible-browser` or `$BROWSER`. An opener called by absolute path would open the real browser directly, without Home's check.
 - **Where it runs:** outside the chat boundary, because the browser's redirect has to reach agy's listener. It runs in an empty directory with the usual environment allowlist, creates no session, runs no model and gets no tools; see SECURITY.md.
 
-Home shows whether a file-storage login is saved. A saved login is not proof that Google still accepts it. A chat on a signed-out profile fails at once as `unauthorized`, telling the person to sign in from Home, because every session carries the marker that stops agy from opening a browser.
+Where agy keeps the login decides whether the sandboxed sessions can use it. agy 1.5.13 uses the OS keyring, and its own file storage only where there is no keyring, as on a headless Linux host. It has no setting that forces file storage: `AGY_ACP_FORCE_FILE_STORAGE` does not exist in its binary, and Bridge no longer sets it.
+- **Linux without a keyring:** the login is a file that the sandboxed sessions read. This is how the qualification VM works.
+- **macOS:** the login goes to the Keychain, which Codex's sandbox cannot reach. Measured on the Mac at f153b67: Home's sign-in reported success at once without a browser (it reused the owner's existing Keychain login), and no file was written. A sandboxed session there is signed out. The route that gives sandboxed sessions a usable login, without exporting from the Keychain or signing the owner out, is still being decided.
 
-**On a Mac with an existing agy login:** agy normally keeps its login in the Keychain, which the sandbox cannot use. Sign in once from Home, which writes the file-storage login. Before this, a sandboxed turn waited on a browser sign-in until its 120 s bound; that is what the Mac run of 0c3870d measured. Now it is refused at once.
+Home shows whether a file-storage login is saved. A saved login is not proof that Google still accepts it. A chat on a signed-out profile fails at once as `unauthorized`, with the Home sign-in step, because every session carries the marker that stops agy from opening a browser. Before that marker, a sandboxed turn on the Mac waited on a browser sign-in until its 120 s bound.
 
 `BRIDGE_AGY` exists for development only.
 
@@ -115,7 +119,7 @@ Not measured: the macOS desktop, Codex MCP tool calls, long histories, and T3 Co
 
 - Antigravity was first qualified on 20 November and refused, because a workspace's own hooks run outside Codex's sandbox. It now runs inside a whole-process boundary with an MCP-only agent, in a generated empty directory, and is wired into chat routing, Home and the slots; see [the qualification](antigravity-qualification.md). Gemini Neon is not in this account's server catalog, which matches the owner-reported free plan.
 - On macOS the boundary is Codex's own sandbox. It is a candidate until a native Mac run passes: Home lists it as not qualified, and nothing runs, unless the qualification switch `BRIDGE_ANTIGRAVITY_MAC=1` is set.
-- `antigravityLaunch()` prepares the Google-account route. It turns auto-update off, forces file credential storage, moves only the server log, passes only an allowlist of the environment (dropping every `GEMINI_*`, `GOOGLE_*`, `CLOUDSDK_*` and Vertex variable), and does not pass `--sandbox`. It does not isolate the profile: on 1.5.13 the login and state stay under `$HOME/.gemini`, and `GEMINI_HOME` moves nothing.
+- `antigravityLaunch()` prepares the Google-account route. It turns auto-update off, moves only the server log, passes only an allowlist of the environment (dropping every `GEMINI_*`, `GOOGLE_*`, `CLOUDSDK_*` and Vertex variable), and does not pass `--sandbox`. It does not isolate the profile: on 1.5.13 the login and state stay under `$HOME/.gemini`, and `GEMINI_HOME` moves nothing.
 - Turning Antigravity off in Home takes effect at once: its models leave the list and a new chat on one is refused, though a catalog is still cached.
 - Stop, or the loss of full access on a Mac, also ends agy's start: its whole tree is closed and nothing is sent.
 - A resume timeout (rather than agy refusing the session) keeps the session and is retried on the next turn. Read mailbox messages stay on disk with the chat's state.

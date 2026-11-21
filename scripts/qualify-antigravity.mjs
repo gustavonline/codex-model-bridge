@@ -47,7 +47,7 @@ const boxDir = sandboxed ? sandboxRunDir() : join(root, 'box'); if (!sandboxed) 
 const mcpSocket = join(boxDir, 'mcp.sock');
 await new Promise(r => sandboxed ? relayed.listen(mcpSocket, r) : http.listen(0, '127.0.0.1', r)); const port = sandboxed ? null : http.address().port;
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|VERTEX|AGY_|OPENAI_|ANTHROPIC_|CLAUDE|CODEX_|BRIDGE_)/.test(k)));
-Object.assign(env, { ...(process.env.GEMINI_HOME ? { GEMINI_HOME: process.env.GEMINI_HOME } : {}), AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1', BROWSER: '/bin/false', SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0', TMPDIR: join(root, 'tmp') });
+Object.assign(env, { ...(process.env.GEMINI_HOME ? { GEMINI_HOME: process.env.GEMINI_HOME } : {}), AGY_CLI_DISABLE_AUTO_UPDATE: '1', BROWSER: '/bin/false', SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0', TMPDIR: join(root, 'tmp') });
 mkdirSync(env.TMPDIR);
 const t0 = performance.now();
 const acpArgs = ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(sandboxed ? boxDir : root, 'acp.log'), ...extraArgs];

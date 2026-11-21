@@ -69,10 +69,14 @@ The account's model list is read by a short probe that belongs to no chat: it ge
 - **`agy acp --login`:** sends Google back to `https://antigravity.google/oauth-callback` and asks for the code to be pasted, with or without a terminal. Model Bridge does not use it.
 - **ACP `authenticate` (`oauth-personal`) on a signed-out profile that may open a browser:** agy calls the system opener with an authorization that returns to `http://localhost:<port>/auth/callback`, its own listener. No paste is involved. This is Home's sign-in.
 - **The same call with the remote marker (`SSH_CONNECTION`):** refused at once with "No browser is available here". Every session and catalog probe sets that marker.
-- **File-storage login:** lives at `~/.gemini/antigravity-cli/antigravity-oauth-token`. Home reports only whether it exists, and never reads it.
+- **File-storage login:** lives at `~/.gemini/antigravity-cli/antigravity-oauth-token`, but only where agy has no OS keyring (headless Linux). On macOS agy uses the Keychain. Home reports only whether the file exists, and never reads it.
+- **Profile directory:** agy's `--gemini-dir <abs>` moves its state and login. A fresh directory is signed out while the default profile is signed in (Linux, measured).
+
+These sign-in rows are Linux measurements.
 
 Still not done:
-- a live macOS Gemini turn (needs the owner's agy sign-in under file storage);
+- a live macOS Gemini turn: no sandboxed session on the Mac has a usable login yet (agy's Mac login is in the Keychain);
+- Home's sign-in has never completed end to end with a real Google account; on macOS neither the opener interception nor where the login is stored has been proven;
 - approval mapping per Codex sandbox and approval combination is not tested.
 
 ## What would change this
