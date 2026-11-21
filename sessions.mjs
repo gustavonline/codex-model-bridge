@@ -107,7 +107,7 @@ function report(bridge, caller, args) {
   for (const key of ['threadId', 'cursor', 'limit', 'ack']) if (args[key] !== undefined) throw new RpcError(`report does not take ${key}`, -32602);
   if (typeof args.requestId !== 'string' || !requestIdPattern.test(args.requestId)) throw new RpcError('A stable requestId of 8–100 letters, digits, hyphens or underscores is required', -32602);
   if (!['question', 'progress', 'result'].includes(args.kind)) throw new RpcError('kind must be question, progress or result', -32602);
-  if (typeof args.text !== 'string' || !args.text.trim()) throw new RpcError('A nonempty message is required', -32602);
+  if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 16000) throw new RpcError('A nonempty message of at most 16000 characters is required', -32602);
   if (args.replyTo !== undefined && !/^[a-f0-9]{32}$/.test(args.replyTo)) throw new RpcError('replyTo must be a message id', -32602);
   const to = link.callerThreadId, from = caller.thread.id, id = digest(`${from}\0${args.requestId}`).slice(0, 32);
   const message = { id, from, to, kind: args.kind, text: args.text, ...(args.replyTo ? { replyTo: args.replyTo } : {}), requestId: args.requestId };
@@ -116,7 +116,8 @@ function report(bridge, caller, args) {
   const same = old => old && ['from', 'to', 'kind', 'text', 'replyTo', 'requestId'].every(k => old[k] === message[k]);
   const prior = existing();
   if (prior) { if (!same(prior)) throw new RpcError('requestId already belongs to another message', -32602); return { id, delivered: true, duplicate: true }; }
-  if (mailOf(bridge, to).filter(m => m.from === from).length >= MAIL_PER_SENDER) throw new RpcError('This chat has sent the most messages allowed to its creator; nothing was sent', -32602);
+  // The bound is on what the creator has not read yet: a long-lived child keeps reporting as long as its messages are read.
+  if (mailOf(bridge, to).filter(m => m.from === from && !m.read).length >= MAIL_PER_SENDER) throw new RpcError('This chat has sent the most unread messages allowed to its creator; nothing was sent, and it can report again once they are read', -32602);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (!reserveReceipt(path, { ...message, at: Date.now() })) { // another instance or a concurrent call wrote it first
     const raced = existing(); if (same(raced)) return { id, delivered: true, duplicate: true };

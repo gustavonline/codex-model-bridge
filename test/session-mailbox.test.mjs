@@ -102,3 +102,14 @@ test('a created child gets exactly its GPT parent\'s desktop tools, discovers th
     for (let i = 0; i < 400 && f.bridge.active.has(bare.threadId); i++) await new Promise(r => setTimeout(r, 5));
   } finally { gate.resolve(); await new Promise(r => setTimeout(r, 30)); f.close(); }
 });
+
+test('a report is at most 16000 characters, and the per-sender bound counts only messages the creator has not read', async () => {
+  const { f, parent, child, childTurn, end } = await family(); try {
+    assert.match((await call(f, child, childTurn(), 'mailbox', { operation: 'report', kind: 'result', text: 'x'.repeat(16001), requestId: 'too-long-000001' })).error, /16000/);
+    assert.ok((await call(f, child, childTurn(), 'mailbox', { operation: 'report', kind: 'result', text: 'x'.repeat(16000), requestId: 'just-fits-00001' })).delivered);
+    for (let i = 1; i < 200; i++) assert.ok((await call(f, child, childTurn(), 'mailbox', { operation: 'report', kind: 'progress', text: `step ${i}`, requestId: `progress-${String(i).padStart(6, '0')}` })).delivered, `message ${i}`);
+    assert.match((await call(f, child, childTurn(), 'mailbox', { operation: 'report', kind: 'progress', text: 'one more', requestId: 'over-bound-0001' })).error, /unread messages/);
+    let cursor; do { const box = await call(f, parent, 'p1', 'mailbox', { operation: 'inbox', ack: true, limit: 20, ...(cursor ? { cursor } : {}) }); assert.ok(box.data, JSON.stringify(box)); cursor = box.nextCursor; } while (cursor);
+    assert.ok((await call(f, child, childTurn(), 'mailbox', { operation: 'report', kind: 'progress', text: 'one more', requestId: 'over-bound-0002' })).delivered, 'read messages no longer count');
+  } finally { await end(); }
+});
