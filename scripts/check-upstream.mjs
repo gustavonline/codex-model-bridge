@@ -1,5 +1,5 @@
 // On demand, for maintainers: what changed in T3 Code's Antigravity harness since the reference pinned in docs/upstream-reference.md.
-// Reads GitHub's public compare API through `gh` (the project's own GitHub access); writes nothing, runs nothing from upstream.
+// A read-only GET of GitHub's public compare API through `gh` (the project's own GitHub access); writes nothing, runs nothing from upstream.
 // Usage: node scripts/check-upstream.mjs [ref]   (default ref: main). Exit 2 when upstream cannot be read here (no access is assumed).
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
