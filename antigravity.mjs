@@ -1,8 +1,9 @@
 // Antigravity (Google's official `agy acp`) as a Bridge harness: one ACP session inside the whole-process boundary of harness-sandbox.mjs.
-// Layers, outermost first: the OS boundary (read-only filesystem except agy's own state, no network but Google's endpoints, own PID namespace);
+// Layers, outermost first: the OS boundary of harness-sandbox.mjs (an empty working directory, read-only except agy's own state, no network but
+// Google's endpoints; bubblewrap on Linux, Codex's own sandbox on macOS);
 // an MCP-only main agent (`tools: []`, so agy has no native file, shell or web tools); and the permission answer, which admits only the exact
 // Codex MCP tools Bridge serves. Every effect therefore goes through Codex's own tools, its sandbox and its approvals, as for Claude Code.
-// The catalog is what the signed-in account's session reports; nothing is added. Linux only: elsewhere `open` refuses before starting anything.
+// The catalog is what the signed-in account's session reports; nothing is added. Where the boundary is unavailable `open` refuses before starting anything.
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -64,7 +65,7 @@ export function acpClient(child, { onRequest, onNotification, maxLine = 8 * 1024
 export const mcpRelay = fileURLToPath(new URL('./harness-mcp-relay.mjs', import.meta.url));
 // Opens one Antigravity session. `mcpServe(stream)` serves Bridge's Codex MCP tools on one relayed connection; `codexTools` are their names; `onEvent`
 // receives { type: 'text', text } | { type: 'tool', id, title, status } | { type: 'permission', title, allowed }. `start` is injectable for tests.
-export async function open({ executable, cwd, home, agentName, mcpServe, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume', localBinding = false }) {
+export async function open({ executable, cwd, home, agentName, mcpServe, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume', localBinding = false, stateRoot = null }) {
   if (!(await available())) fail('harness_boundary_unavailable', 'Antigravity needs Model Bridge\'s process sandbox, which is not available on this system, so nothing was started.');
   const runDir = sandboxRunDir(), mcpSocket = join(runDir, 'mcp.sock'), http = createServer(stream => { stream.on('error', () => {}); Promise.resolve(mcpServe(stream)).catch(() => stream.destroy()); });
   await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
@@ -75,7 +76,7 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
   // and Codex config are never loaded at all. The workspace itself is not even visible inside the boundary.
   const agyCwd = mkdtempSync(join(tmpdir(), 'bridge-agy-cwd-'));
   let box;
-  try { box = await start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd: agyCwd, env: spec.env, readable: [mcpRelay], writable: [join(home, '.gemini')], allow: googleEndpoints, runDir, mcpSocket, localBinding }); }
+  try { box = await start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd: agyCwd, env: spec.env, readable: [mcpRelay], writable: [join(home, '.gemini')], allow: googleEndpoints, runDir, mcpSocket, localBinding, ...(stateRoot ? { stateRoot } : {}) }); }
   catch (error) { http.close(); rmSync(agyCwd, { recursive: true, force: true }); throw error; }
   let sessionId = null;
   const acp = acpClient(box.child, {

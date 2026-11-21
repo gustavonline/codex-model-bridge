@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, lstatSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { ProviderRegistry, rootOk, readPrivate, localModelId, freeOnly, modelReasoning } from './providers.mjs';
-import { harnessStatuses, readHarnessSettings, setHarnessEnabled } from './harnesses.mjs';
+import { boundarySupported, harness, harnessStatuses, readHarnessSettings, setHarnessEnabled } from './harnesses.mjs';
 const identity = p => { const s = lstatSync(p); return [s.dev, s.ino, s.uid, s.mode & 0o777].join(':'); };
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const id = x => typeof x === 'string' && /^[a-f0-9]{32}$/.test(x);
@@ -44,7 +44,8 @@ export function providerControls(path, { request, secrets, authOptions = {} } = 
   // Antigravity as a connected provider once it is turned on (or its models are in the library): its account's models, available only while
   // it is on and its catalog is current. Turning it off keeps the saved selection, shown as unavailable.
   const agyProvider = () => {
-    const on = readHarnessSettings(state).antigravity?.enabled === true, models = registry.pickerCatalog().models.filter(m => m.kind === 'antigravity');
+    // A choice saved where the boundary is not offered (a macOS candidate without its switch) is not "on".
+    const on = readHarnessSettings(state).antigravity?.enabled === true && boundarySupported(harness('antigravity')), models = registry.pickerCatalog().models.filter(m => m.kind === 'antigravity');
     if (!on && !models.length) return [];
     return [{ id: '00000000000000000000000000000003', kind: 'antigravity', name: 'Gemini (Antigravity)', baseUrl: '', protocol: 'antigravity', authRef: null, selected: null, enabled: on,
       catalogState: !models.length ? 'unknown' : models.every(m => m.available) ? 'fresh' : 'stale', models: models.map(m => ({ ...m, available: m.available && on })) }];

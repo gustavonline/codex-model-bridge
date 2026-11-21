@@ -38,7 +38,8 @@ const descriptors = [
   { id: 'antigravity', label: 'Gemini (Antigravity)', transport: 'ACP: agy acp', executable: 'agy', minimumVersion: '1.5.0', auth: 'Google account in the browser (oauth-personal)', boundary: ['linux', 'darwin'],
     reason: 'A workspace\'s own Antigravity hooks run commands outside the Codex sandbox, without asking, at every session start and model call. It stays off until its whole process runs inside a boundary that matches Codex permissions.',
     reasonWhereSupported: 'Runs inside Model Bridge\'s process boundary, with only the Codex tools Bridge supplies. Sign in once with agy itself; Bridge never sees your Google password. Your account\'s models appear in the model list for new chats.',
-    reasonWhereSupportedDarwin: 'Runs inside Codex\'s own sandbox with only the Codex tools Bridge supplies. On this Mac it runs only in chats with full access, because agy\'s own local listener needs a grant that also opens this Mac\'s local network services. Turning it on accepts that for full-access chats. Sign in once with agy itself.' },
+    reasonWhereSupportedDarwin: 'Runs inside Codex\'s own sandbox with only the Codex tools Bridge supplies. On this Mac it runs only in chats with full access, because agy\'s own local listener needs a grant that also opens this Mac\'s local network services. Turning it on accepts that for full-access chats. Sign in once with agy itself.',
+    reasonCandidateDarwin: 'The macOS boundary (Codex\'s own sandbox) has not passed its native qualification on a Mac yet, so it stays off here. A qualification run enables it with BRIDGE_ANTIGRAVITY_MAC=1.' },
   { id: 'cursor', label: 'Cursor', transport: '@cursor/sdk', auth: 'Cursor account',
     reason: 'The Cursor SDK reports no command or file approval support, so Codex permissions cannot be honoured.' },
   { id: 'muse', label: 'Muse Code', transport: '@muse-code/sdk', auth: 'Muse account', reason: 'Not qualified in Model Bridge yet.' },
@@ -51,6 +52,9 @@ const descriptors = [
 ].map(d => Object.freeze(d));
 export const harnesses = Object.freeze(descriptors);
 export const harness = id => harnesses.find(h => h.id === id) ?? null;
+// Whether a harness's boundary is supported on this platform. macOS is a candidate until its native qualification passes: it is offered only
+// with the explicit qualification switch BRIDGE_ANTIGRAVITY_MAC=1, never by default.
+export const boundarySupported = (h, platform = process.platform, env = process.env) => !!h?.boundary?.includes(platform) && (platform !== 'darwin' || env.BRIDGE_ANTIGRAVITY_MAC === '1');
 
 // An executable found on PATH (or at an explicit absolute path) is only "found": it is never run here, so its version, sign-in and models stay unknown.
 // A desktop app's PATH usually lacks the per-user and Homebrew locations installers use, so those are searched too.
@@ -65,14 +69,14 @@ export function findExecutable(name, { path = process.env.PATH ?? '', home = pro
 }
 // What Home shows for every harness that is not one of the executing two. States are separate facts, never folded into "ready":
 // runtime (found / not_found / not_applicable), sign-in and models (unknown: nothing is probed), execution (not_qualified + reason).
-export function harnessStatuses({ find = findExecutable, platform = process.platform, root = null } = {}) {
+export function harnessStatuses({ find = findExecutable, platform = process.platform, root = null, env = process.env } = {}) {
   const settings = root ? readHarnessSettings(root) : null;
   return harnesses.filter(h => !h.executes).map(h => {
-    const found = h.executable ? find(h.executable) : null, supported = !!h.boundary?.includes(platform);
+    const found = h.executable ? find(h.executable) : null, supported = boundarySupported(h, platform, env);
     return { id: h.id, label: h.label, transport: h.transport,
       runtime: h.executable ? (found ? 'found' : 'not_found') : 'not_applicable', ...(h.executable ? { executable: h.executable } : {}),
       ...(h.minimumVersion ? { minimumVersion: h.minimumVersion } : {}), ...(h.auth ? { auth: h.auth } : {}),
-      signIn: 'unknown', catalog: 'unknown', execution: supported ? 'qualified_here' : 'not_qualified', reason: supported ? (platform === 'darwin' && h.reasonWhereSupportedDarwin) || h.reasonWhereSupported : h.reason,
+      signIn: 'unknown', catalog: 'unknown', execution: supported ? 'qualified_here' : 'not_qualified', reason: supported ? (platform === 'darwin' && h.reasonWhereSupportedDarwin) || h.reasonWhereSupported : (platform === 'darwin' && h.boundary?.includes('darwin') && h.reasonCandidateDarwin) || h.reason,
       ...(supported ? { enabled: settings?.[h.id]?.enabled === true, canEnable: !!found } : {}) };
   });
 }
@@ -88,9 +92,9 @@ export function readHarnessSettings(root) {
     return out;
   } catch { return { version: 1, revision: 0 }; }
 }
-export function setHarnessEnabled(root, id, enabled, { expectedRevision, find = findExecutable, platform = process.platform } = {}) {
+export function setHarnessEnabled(root, id, enabled, { expectedRevision, find = findExecutable, platform = process.platform, env = process.env } = {}) {
   const h = harness(id); if (!h || h.executes || typeof enabled !== 'boolean') throw Object.assign(new Error('Unknown harness'), { code: 'invalid_request' });
-  if (enabled && !h.boundary?.includes(platform)) throw Object.assign(new Error(`${h.label} cannot run on this system yet`), { code: 'harness_not_qualified' });
+  if (enabled && !boundarySupported(h, platform, env)) throw Object.assign(new Error(`${h.label} cannot run on this system yet`), { code: 'harness_not_qualified' });
   const current = readHarnessSettings(root);
   if (expectedRevision !== undefined && expectedRevision !== current.revision) throw Object.assign(new Error('stale'), { code: 'stale_revision' });
   const found = enabled ? find(h.executable) : null;

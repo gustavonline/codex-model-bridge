@@ -28,7 +28,7 @@ writeFileSync(join(ws, 'README.txt'), 'synthetic orchestration workspace\n');
 const report = { gptModel, gptEffort: 'low', gptTurns: 0, geminiTurns: 0, steps: [] }, events = [], waiters = new Set();
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ANTHROPIC_|CLAUDE|OPENAI_API|GEMINI_|GOOGLE_)/.test(k)));
 const child = spawn(process.execPath, [fileURLToPath(new URL('../bridge.mjs', import.meta.url)), 'app-server'], { cwd: ws, stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...env, CODEX_HOME: home, BRIDGE_REAL_CODEX: values.codex, BRIDGE_STATE: join(state, 'bridge'), BRIDGE_COORDINATOR: '1', BRIDGE_MIRROR: '0', BRIDGE_AGY: values.agy } });
+  env: { ...env, CODEX_HOME: home, BRIDGE_REAL_CODEX: values.codex, BRIDGE_STATE: join(state, 'bridge'), BRIDGE_COORDINATOR: '1', BRIDGE_MIRROR: '0', BRIDGE_AGY: values.agy, BRIDGE_ANTIGRAVITY_MAC: '1' } }); // a qualification run: the macOS candidate is on
 let stderr = ''; child.stderr.on('data', b => { stderr = (stderr + b).slice(-4000); });
 const peer = new Peer(child.stdout, child.stdin, {
   request: async method => { throw new Error(`This test approves nothing and offers no desktop tools (${method})`); },

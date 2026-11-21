@@ -42,7 +42,10 @@ test('statuses keep runtime, sign-in, models and execution as separate facts; a 
   for (const h of [...none, ...found].filter(h => h.id !== 'antigravity')) assert.equal(h.execution, 'not_qualified');
   const agy = found.find(h => h.id === 'antigravity'); assert.deepEqual([agy.runtime, agy.minimumVersion, agy.executable], ['found', '1.5.0', 'agy']);
   const other = harnessStatuses({ find: () => '/opt/agy', platform: 'win32' }).find(h => h.id === 'antigravity'), linux = harnessStatuses({ find: () => '/opt/agy', platform: 'linux' }).find(h => h.id === 'antigravity');
-  const mac = harnessStatuses({ find: () => '/opt/agy', platform: 'darwin' }).find(h => h.id === 'antigravity');
+  const mac = harnessStatuses({ find: () => '/opt/agy', platform: 'darwin', env: { BRIDGE_ANTIGRAVITY_MAC: '1' } }).find(h => h.id === 'antigravity');
+  const macDefault = harnessStatuses({ find: () => '/opt/agy', platform: 'darwin', env: {} }).find(h => h.id === 'antigravity');
+  assert.deepEqual([macDefault.execution, macDefault.canEnable], ['not_qualified', undefined], 'macOS stays a candidate until its native qualification');
+  assert.match(macDefault.reason, /not passed its native qualification/);
   assert.deepEqual([other.execution, other.enabled, other.canEnable], ['not_qualified', undefined, undefined]); assert.match(other.reason, /outside the Codex sandbox/);
   assert.deepEqual([mac.execution, mac.canEnable], ['qualified_here', true]); assert.match(mac.reason, /only in chats with full access/);
   assert.deepEqual([linux.execution, linux.enabled, linux.canEnable], ['qualified_here', false, true]); assert.match(linux.reason, /process boundary/);

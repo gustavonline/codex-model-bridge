@@ -28,8 +28,14 @@ test('qualified Antigravity models are offered under their routes; nothing is of
   const f = fixture(); try {
     assert.ok(!(await f.bridge.request('model/list', {})).data.some(m => m.id.startsWith('bridge-harness/')), 'no catalog, no rows');
     f.bridge.agyCatalogReady = { models: [{ id: MODEL, model: 'gemini-x', name: 'Gemini X' }], levels: ['low', 'high'] };
+    f.bridge.antigravityRuntime = () => ({ executable: '/opt/agy', home: '/home/x' });
     const row = (await f.bridge.request('model/list', {})).data.find(m => m.id === MODEL);
     assert.deepEqual([row.displayName, row.isDefault, row.defaultReasoningEffort, row.supportedReasoningEfforts.map(e => e.reasoningEffort)], ['Gemini X · Antigravity', false, 'low', ['low', 'high']]);
+    // Turned off in Home: gone from the list and refused for a new chat at once, though the catalog is still cached.
+    f.bridge.antigravityRuntime = () => null;
+    assert.ok(!(await f.bridge.request('model/list', {})).data.some(m => m.id === MODEL), 'turned off, not offered');
+    await assert.rejects(f.bridge.request('thread/start', { model: MODEL, cwd: f.statePath }), /Antigravity|harness|not/i);
+    assert.equal(f.bridge.records.size, 0, 'no chat was created');
   } finally { f.close(); }
 });
 
@@ -89,7 +95,8 @@ test('Gemini models join the same library and saved slots: a saved one is offere
   const { ProviderRegistry } = await import('../plugins/codex-claude/home/providers.mjs');
   const p = prepareProviderHome(join(mkdtempSync(join(tmpdir(), 'bridge-agy-slots-')), 'scope')), registry = new ProviderRegistry(p.state);
   const OTHER = harnessModelId('antigravity', 'google', 'gemini-y'), ready = { models: [{ id: MODEL, model: 'gemini-x', name: 'Gemini X' }, { id: OTHER, model: 'gemini-y', name: 'Gemini Y' }], levels: ['low', 'high'] };
-  const f = fixture('openai', { connectionRoot: p.state }); f.bridge.agyCatalogReady = ready;
+  const on = b => { b.agyCatalogReady = ready; b.antigravityRuntime = () => ({ executable: '/opt/agy', home: '/home/x' }); };
+  const f = fixture('openai', { connectionRoot: p.state }); on(f.bridge);
   try {
     await f.bridge.request('model/list', {});
     const catalog = registry.pickerCatalog(), agy = catalog.models.filter(m => m.kind === 'antigravity');
@@ -97,7 +104,7 @@ test('Gemini models join the same library and saved slots: a saved one is offere
     registry.savePickerSlots(['gpt-test', MODEL], registry.slots().revision, catalog.revision);
     let ids = (await f.bridge.request('model/list', {})).data.map(m => m.id);
     assert.ok(ids.includes(MODEL) && !ids.includes(OTHER), 'the saved Gemini model is offered, the unselected one is hidden');
-    f.restart(); f.bridge.agyCatalogReady = ready;
+    f.restart(); on(f.bridge);
     ids = (await f.bridge.request('model/list', {})).data.map(m => m.id); assert.ok(ids.includes(MODEL) && !ids.includes(OTHER), 'and after a restart');
     f.restart(); f.bridge.agyCatalogReady = null; f.bridge.antigravityRuntime = () => null; // cold: not loaded (or turned off)
     ids = (await f.bridge.request('model/list', {})).data.map(m => m.id); assert.ok(!ids.includes(MODEL), 'not offered while it cannot run');
@@ -135,13 +142,13 @@ test('macOS gaps closed: no catalog probe without consent, a lost grant stops th
   const root = mkdtempSync(join(tmpdir(), 'bridge-agy-consent-')), f = fixture('openai', { connectionRoot: root }); f.bridge.platform = 'darwin';
   const opened = []; f.bridge.antigravityRuntime = () => ({ executable: process.execPath, home: '/h' }); f.bridge.antigravityAgent = () => 'bridge-mcp-000000000000';
   const { sandboxAvailable } = await import('../harness-sandbox.mjs'); void sandboxAvailable;
-  const before = process.env.BRIDGE_AGY; delete process.env.BRIDGE_AGY;
+  const before = process.env.BRIDGE_AGY, candidate = process.env.BRIDGE_ANTIGRAVITY_MAC; delete process.env.BRIDGE_AGY; process.env.BRIDGE_ANTIGRAVITY_MAC = '1';
   try {
     const c = await f.bridge.antigravityCatalog({ refresh: true }); assert.equal(c.reason, 'local_listener_consent_required'); assert.equal(opened.length, 0);
     setHarnessEnabled(root, 'antigravity', true, { platform: 'darwin', find: () => process.execPath });
     assert.equal(readHarnessSettings(root).antigravity.localListener, true, 'Turn on on a Mac records the consent');
     setHarnessEnabled(root, 'antigravity', false, { platform: 'darwin' }); assert.equal(readHarnessSettings(root).antigravity.localListener, undefined, 'Turn off withdraws it');
-  } finally { if (before !== undefined) process.env.BRIDGE_AGY = before; f.close(); }
+  } finally { if (before !== undefined) process.env.BRIDGE_AGY = before; if (candidate === undefined) delete process.env.BRIDGE_ANTIGRAVITY_MAC; else process.env.BRIDGE_ANTIGRAVITY_MAC = candidate; f.close(); }
   // 2. a running full-access turn ends when the chat loses full access
   const hold = deferred(), g = fixture(), a = agy(g, { hold }); g.bridge.platform = 'darwin';
   try {
@@ -173,4 +180,72 @@ test('a Gemini child on macOS is decided on its own native-confirmed permissions
     assert.equal(r.success, false, 'the child (read-only as native reports it) refuses its first message'); assert.match(text, /did not receive the same permissions|full access/);
     assert.equal(a.opened.length, 0, 'no agy process for it');
   } finally { hold.resolve({ stopReason: 'end_turn' }); f.close(); }
+});
+
+test('an Antigravity chat reopens on its own model and session, before and after a restart, and its thinking level changes through settings', async () => {
+  const f = fixture(), a = agy(f); try {
+    const id = await start(f), one = (await f.send(id, 'first')).turn; await f.done(one.id);
+    const session = a.opened[0].sessionId;
+    const resumed = await f.bridge.request('thread/resume', { threadId: id, model: MODEL });
+    assert.deepEqual([resumed.model, resumed.thread.id], [MODEL, id]);
+    await assert.rejects(f.bridge.request('thread/resume', { threadId: id, model: 'gpt-test' }), /keeps its model/);
+    assert.equal(f.bridge.records.get(id).model, MODEL, 'a refused reopen changed nothing');
+    f.restart(); const b = agy(f);
+    await f.bridge.request('thread/resume', { threadId: id, model: MODEL });
+    const updated = f.wait(e => e.method === 'thread/settings/updated' && e.params.threadId === id);
+    assert.deepEqual(await f.bridge.request('thread/settings/update', { threadId: id, effort: 'high' }), {});
+    await updated; assert.equal(f.bridge.records.get(id).effort, 'high');
+    await assert.rejects(f.bridge.request('thread/settings/update', { threadId: id, effort: 'xhigh' }), /Unsupported effort/);
+    assert.equal(f.bridge.records.get(id).effort, 'high', 'a refused level changed nothing');
+    const two = (await f.send(id, 'second')).turn; await f.done(two.id);
+    assert.deepEqual([f.bridge.records.get(id).turns.at(-1).status, b.opened[0].resume], ['completed', session], 'after the restart the same agy session continues');
+  } finally { f.close(); }
+});
+
+test('Stop or a lost grant while agy is still starting sends nothing and ends the turn interrupted', async () => {
+  for (const how of ['stop', 'grant']) {
+    const gate = deferred(), f = fixture(), a = agy(f), prompts = [], closed = []; if (how === 'grant') f.bridge.platform = 'darwin';
+    const open = f.bridge.antigravityOpen;
+    f.bridge.antigravityOpen = async opts => { await gate.promise; const s = await open(opts); return { ...s, prompt: async t => { prompts.push(t); return s.prompt(t); }, close: async () => { closed.push(1); return s.close(); } }; };
+    try {
+      const id = await start(f), record = f.bridge.records.get(id); record.sandbox = { type: 'dangerFullAccess' }; f.bridge.ensureLoaded = async () => {};
+      const turn = (await f.send(id, 'hello')).turn; while (!f.bridge.active.get(id)?.query) await new Promise(r => setTimeout(r, 5));
+      if (how === 'stop') await f.bridge.request('turn/interrupt', { threadId: id, turnId: turn.id });
+      else await f.bridge.nativeNotification('thread/settings/updated', { threadId: id, threadSettings: { ...f.bridge.hostSettings(record), sandboxPolicy: { type: 'readOnly', networkAccess: false } } });
+      gate.resolve(); await f.done(turn.id);
+      assert.deepEqual([f.bridge.records.get(id).turns.at(-1).status, prompts.length, closed.length, a.opened.length], ['interrupted', 0, 1, 1], `${how}: opened, closed, nothing sent`);
+    } finally { gate.resolve(); f.close(); }
+  }
+});
+
+test('a session agy cannot resume is replaced once by a fresh one that carries the visible history; instructions follow a failed first prompt', async () => {
+  const f = fixture(), a = agy(f), prompts = []; let failNext = true, refuseResume = false;
+  const open = f.bridge.antigravityOpen;
+  f.bridge.antigravityOpen = async opts => {
+    if (opts.resume && refuseResume) { refuseResume = false; a.opened.push({ resume: opts.resume, refused: true }); throw Object.assign(new Error('session not found'), { code: 'harness_error' }); }
+    const s = await open(opts);
+    return { ...s, prompt: async t => { prompts.push(t); if (failNext) { failNext = false; throw new Error('network went away'); } return s.prompt(t); } };
+  };
+  try {
+    const id = await start(f), one = (await f.send(id, 'first')).turn; await f.done(one.id);
+    assert.equal(f.bridge.records.get(id).turns[0].status, 'failed');
+    const two = (await f.send(id, 'second')).turn; await f.done(two.id);
+    assert.match(prompts[0], /Model Bridge/); assert.match(prompts[1], /Model Bridge/, 'the instructions go again: the first prompt never completed');
+    const three = (await f.send(id, 'third')).turn; await f.done(three.id);
+    assert.doesNotMatch(prompts[2], /Model Bridge/, 'not repeated once delivered');
+    refuseResume = true; const four = (await f.send(id, 'fourth')).turn; await f.done(four.id);
+    const record = f.bridge.records.get(id);
+    assert.equal(record.turns.at(-1).status, 'completed');
+    assert.deepEqual(a.opened.slice(-2).map(o => [!!o.resume, !!o.refused]), [[true, true], [false, false]], 'one refused resume, then one fresh session');
+    assert.match(prompts[3], /Model Bridge/); assert.match(prompts[3], /third/, 'the fresh session carries the earlier visible conversation');
+    assert.equal(record.acpSessionId, a.opened.at(-1).sessionId);
+  } finally { f.close(); }
+});
+
+test('a new Antigravity chat refuses automatic approval review, like any Model Bridge chat', async () => {
+  const f = fixture(); agy(f); try {
+    await assert.rejects(f.bridge.request('thread/start', { model: MODEL, cwd: f.statePath, approvalsReviewer: 'auto_review' }), /reviewed by the user/);
+    assert.equal(f.bridge.records.size, 0);
+    assert.ok(f.bridge.records.get(await (async () => (await f.bridge.request('thread/start', { model: MODEL, cwd: f.statePath, approvalsReviewer: 'user' })).thread.id)()));
+  } finally { f.close(); }
 });
